@@ -39,18 +39,23 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 CONCURRENCY_LIMIT = 3
 processing_semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
-# Haqiqiy Instagram "Grandpa" ovoz effekti DSP filtri:
-# - asetrate + atempo: Qari odamning chuqur, past tembriga o'tkazish (pitch down ~-4.5 semiton)
-# - equalizer: Ko'krak qafasi va bo'g'iz rezonansi (180Hz va 550Hz)
-# - lowpass: Yuqori shovqinli chastotalarni qirqish (4200Hz)
-# - acompressor: Ovozni to'yingan, aniq va baland ushlab turish
+# Haqiqiy Instagram / CapCut "Grandpa" (Boboy) ovoz effekti DSP filtri:
+# 1. aresample=48000: Barcha turdagi audio/ovozlarni 48kHz ga standartlashtirish
+# 2. asetrate=48000*0.84,atempo=1.19: Qari odamning tabiiy tembriga o'tkazish (pitch down ~3 semiton)
+# 3. vibrato=f=6.2:d=0.24 va tremolo=f=6.2:d=0.32: Qariyalarga xos fiziologik ovoz va nafas titrashi (senile vocal tremor)
+# 4. highpass=f=180,lowpass=f=3800: Yoshlikka xos o'tkir yuqori va past shovqinlarni kesish
+# 5. equalizer: 1150Hz dagi bo'g'iz rezonansini kuchaytirish va 320Hz ni yupqalashtirish
 GRANDPA_AUDIO_FILTER = (
-    "asetrate=48000*0.78,"
-    "atempo=1.282,"
-    "equalizer=f=180:t=q:w=1.0:g=3.5,"
-    "equalizer=f=550:t=q:w=1.2:g=2.5,"
-    "lowpass=f=4200,"
-    "acompressor=threshold=-16dB:ratio=3:attack=20:release=250"
+    "aresample=48000,"
+    "asetrate=48000*0.84,"
+    "atempo=1.19,"
+    "vibrato=f=6.2:d=0.24,"
+    "tremolo=f=6.2:d=0.32,"
+    "highpass=f=180,"
+    "lowpass=f=3800,"
+    "equalizer=f=1150:t=q:w=1.4:g=4,"
+    "equalizer=f=320:t=q:w=1.2:g=-2,"
+    "volume=1.2"
 )
 
 # Aiogram bot va dispatcher
