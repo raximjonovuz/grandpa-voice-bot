@@ -1,0 +1,22 @@
+# Muhit o'zgaruvchilari (Tokenni ochiq qoldirmaslik uchun)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Vaqtinchalik audio fayllar
+temp/
+*.ogg
+
+# IDE va tizim fayllari
+.idea/
+.vscode/
+*.swp
+.DS_Store

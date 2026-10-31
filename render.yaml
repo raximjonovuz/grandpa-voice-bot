@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: grandpa-voice-bot
+    runtime: docker
+    plan: free
+    region: frankfurt
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: PORT
+        value: 8080

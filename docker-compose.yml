@@ -1,0 +1,11 @@
+services:
+  grandpa-bot:
+    build: .
+    container_name: grandpa_voice_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
