@@ -238,17 +238,21 @@ async def main():
     logger.info("Bot ishga tushmoqda...")
     await cleanup_temp_dir()
 
-    # Render yoki boshqa serverlar PORT o'zgaruvchisini beradi
-    port = int(os.getenv("PORT", "8080"))
+    # Faqat Render/Cloud serverda health-check veb-serverini ishga tushiramiz
     runner = None
-    try:
-        runner = await start_health_check_server(port)
-    except Exception as e:
-        logger.warning(f"Health-check veb-serverini ishga tushirib bo'lmadi (lokal rejimda normal): {e}")
+    if os.getenv("RENDER"):
+        port = int(os.getenv("PORT", "8080"))
+        try:
+            runner = await start_health_check_server(port)
+        except Exception as e:
+            logger.warning(f"Health-check veb-serveri xatosi: {e}")
 
     try:
         # Eski kutilayotgan yangilanishlarni tozalash va pollingni boshlash
         await bot.delete_webhook(drop_pending_updates=True)
+        bot_user = await bot.get_me()
+        logger.info(f"✅ Bot tayyor va ishga tushdi: @{bot_user.username}")
+        logger.info("Endi Telegramda botga ovozli xabar yuborishingiz mumkin.")
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         logger.info("Bot to'xtatilmoqda...")
