@@ -33,8 +33,23 @@ BASE_FILTER = ",".join([
     "equalizer=f=1100:t=q:w=1.0:g=-3",
 ])
 
-# calibrate natijasini shu yerga qo'ying (bo'sh bo'lsa ishlatilmaydi)
-EQ_FILTER = ""
+# calibrate natijasi (ovoz.mp4 ga moslashtirilgan spektral tuzatish)
+EQ_FILTER = (
+    "equalizer=f=125:t=o:w=0.33:g=-5.3,"
+    "equalizer=f=160:t=o:w=0.33:g=-3.1,"
+    "equalizer=f=200:t=o:w=0.33:g=3.4,"
+    "equalizer=f=315:t=o:w=0.33:g=-2.5,"
+    "equalizer=f=400:t=o:w=0.33:g=2.3,"
+    "equalizer=f=500:t=o:w=0.33:g=5.0,"
+    "equalizer=f=630:t=o:w=0.33:g=6.4,"
+    "equalizer=f=800:t=o:w=0.33:g=7.6,"
+    "equalizer=f=1000:t=o:w=0.33:g=6.9,"
+    "equalizer=f=1250:t=o:w=0.33:g=5.7,"
+    "equalizer=f=1600:t=o:w=0.33:g=2.7,"
+    "equalizer=f=2000:t=o:w=0.33:g=-1.0,"
+    "equalizer=f=2500:t=o:w=0.33:g=-1.1,"
+    "equalizer=f=4000:t=o:w=0.33:g=-1.3"
+)
 
 
 def build_filter() -> str:
@@ -82,13 +97,9 @@ def _to_wav16k(src: Path, dst: Path, af: str | None = None) -> None:
 
 def _ltas(path: Path) -> np.ndarray:
     """Faol (ovozli) kadrlar bo'yicha o'rtacha spektr, 1/3-oktava, dB."""
-    import wave
-    with wave.open(str(path), "rb") as wf:
-        sr = wf.getframerate()
-        n = wf.getnframes()
-        data = wf.readframes(n)
-        x = np.frombuffer(data, dtype=np.int16).astype(np.float64) / 32768.0
-
+    from scipy.io import wavfile
+    sr, x = wavfile.read(path)
+    x = x.astype(np.float64) / 32768
     n, h = 2048, 512
     win = np.hanning(n)
     frames = [x[i:i + n] * win for i in range(0, len(x) - n, h)]

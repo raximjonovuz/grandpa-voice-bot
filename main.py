@@ -39,21 +39,10 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 CONCURRENCY_LIMIT = 3
 processing_semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
-# "Chol ovozi" effekti (ovoz.mp4 dagi ovozga moslashtirilgan)
-PITCH = 0.84  # 0.84 ~ -3 yarim ton (F0: ~120 Hz -> ~100 Hz)
+from grandpa_voice import build_filter
 
-GRANDPA_AUDIO_FILTER = ",".join([
-    "aresample=48000",
-    f"asetrate=48000*{PITCH}",     # tovush balandligini tushirish
-    "aresample=48000",             # sample rate ni qaytarish
-    f"atempo={1 / PITCH:.5f}",     # tezlikni asliga qaytarish
-    "vibrato=f=6.5:d=0.15",        # yengil titroq (kuchli tremolo olib tashlandi)
-    "highpass=f=70",               # F0 (~100 Hz) saqlansin, faqat shovqin kesiladi
-    "lowpass=f=2800:p=2",          # yuqori chastotalar yumshoq kesiladi
-    "bass=g=2:f=200",              # past chastotalarni biroz kuchaytirish
-    "equalizer=f=1100:t=q:w=1.0:g=-3",
-    "alimiter=limit=0.95",
-])
+# ovoz.mp4 ga to'liq kalibrlangan "Grandpa" filtri
+GRANDPA_AUDIO_FILTER = build_filter()
 
 # Aiogram bot va dispatcher
 bot = Bot(token=BOT_TOKEN)
