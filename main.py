@@ -39,24 +39,21 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 CONCURRENCY_LIMIT = 3
 processing_semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
-# Haqiqiy Instagram / CapCut "Grandpa" (Boboy) ovoz effekti DSP filtri:
-# 1. aresample=48000: Barcha turdagi audio/ovozlarni 48kHz ga standartlashtirish
-# 2. asetrate=48000*0.84,atempo=1.19: Qari odamning tabiiy tembriga o'tkazish (pitch down ~3 semiton)
-# 3. vibrato=f=6.2:d=0.24 va tremolo=f=6.2:d=0.32: Qariyalarga xos fiziologik ovoz va nafas titrashi (senile vocal tremor)
-# 4. highpass=f=180,lowpass=f=3800: Yoshlikka xos o'tkir yuqori va past shovqinlarni kesish
-# 5. equalizer: 1150Hz dagi bo'g'iz rezonansini kuchaytirish va 320Hz ni yupqalashtirish
-GRANDPA_AUDIO_FILTER = (
-    "aresample=48000,"
-    "asetrate=48000*0.84,"
-    "atempo=1.19,"
-    "vibrato=f=6.2:d=0.24,"
-    "tremolo=f=6.2:d=0.32,"
-    "highpass=f=180,"
-    "lowpass=f=3800,"
-    "equalizer=f=1150:t=q:w=1.4:g=4,"
-    "equalizer=f=320:t=q:w=1.2:g=-2,"
-    "volume=1.2"
-)
+# "Chol ovozi" effekti (ovoz.mp4 dagi ovozga moslashtirilgan)
+PITCH = 0.84  # 0.84 ~ -3 yarim ton (F0: ~120 Hz -> ~100 Hz)
+
+GRANDPA_AUDIO_FILTER = ",".join([
+    "aresample=48000",
+    f"asetrate=48000*{PITCH}",     # tovush balandligini tushirish
+    "aresample=48000",             # sample rate ni qaytarish
+    f"atempo={1 / PITCH:.5f}",     # tezlikni asliga qaytarish
+    "vibrato=f=6.5:d=0.15",        # yengil titroq (kuchli tremolo olib tashlandi)
+    "highpass=f=70",               # F0 (~100 Hz) saqlansin, faqat shovqin kesiladi
+    "lowpass=f=2800:p=2",          # yuqori chastotalar yumshoq kesiladi
+    "bass=g=2:f=200",              # past chastotalarni biroz kuchaytirish
+    "equalizer=f=1100:t=q:w=1.0:g=-3",
+    "alimiter=limit=0.95",
+])
 
 # Aiogram bot va dispatcher
 bot = Bot(token=BOT_TOKEN)
