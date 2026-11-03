@@ -1,17 +1,108 @@
 import sqlite3
+import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
+
+import cf_storage
 
 DB_PATH = Path(__file__).parent / "bot_database.db"
 
 
+def _get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, timeout=15.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    return conn
+
+
+def _async_cloud_backup():
+    """Foydalanuvchilar, VIP qoidalar va sozlamalarni Cloudflare KV ga fonda saqlash."""
+    def _worker():
+        try:
+            conn = _get_conn()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT user_id, username, first_name, last_name, mode, chat_step,
+                       user_age, user_custom_name, memory_notes, vip_instruction,
+                       admin_paused_until, joined_at, last_active
+                FROM users
+            """)
+            users_data = [
+                {
+                    "user_id": r[0], "username": r[1], "first_name": r[2], "last_name": r[3],
+                    "mode": r[4], "chat_step": r[5], "user_age": r[6], "user_custom_name": r[7],
+                    "memory_notes": r[8], "vip_instruction": r[9], "admin_paused_until": r[10],
+                    "joined_at": r[11], "last_active": r[12]
+                }
+                for r in cur.fetchall()
+            ]
+            cur.execute("SELECT username, instruction, created_at FROM vip_rules")
+            vips_data = [{"username": r[0], "instruction": r[1], "created_at": r[2]} for r in cur.fetchall()]
+            cur.execute("SELECT key, value FROM settings")
+            settings_data = {r[0]: r[1] for r in cur.fetchall()}
+            conn.close()
+
+            cf_storage.kv_put_json("bot_state_v1", {
+                "users": users_data,
+                "vip_rules": vips_data,
+                "settings": settings_data,
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }, with_ttl=False)
+        except Exception:
+            pass
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def restore_from_cloud_if_needed():
+    """Server qayta ishga tushganda Cloudflare KV dan foydalanuvchilar va sozlamalarni tiklash."""
+    try:
+        state = cf_storage.kv_get_json("bot_state_v1")
+        if not isinstance(state, dict):
+            return
+        conn = _get_conn()
+        cur = conn.cursor()
+
+        # Settings tiklash
+        for k, v in (state.get("settings") or {}).items():
+            cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (k, v))
+
+        # VIP rules tiklash
+        for vr in (state.get("vip_rules") or []):
+            cur.execute(
+                "INSERT OR REPLACE INTO vip_rules (username, instruction, created_at) VALUES (?, ?, ?)",
+                (vr.get("username"), vr.get("instruction"), vr.get("created_at"))
+            )
+
+        # Users tiklash (agar mahalliy bazada yo'q bo'lsa)
+        for u in (state.get("users") or []):
+            cur.execute("SELECT user_id FROM users WHERE user_id = ?", (u["user_id"],))
+            if not cur.fetchone():
+                cur.execute("""
+                    INSERT INTO users (
+                        user_id, username, first_name, last_name, mode, chat_step,
+                        user_age, user_custom_name, memory_notes, vip_instruction,
+                        admin_paused_until, joined_at, last_active
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    u.get("user_id"), u.get("username"), u.get("first_name"), u.get("last_name"),
+                    u.get("mode", "chat"), u.get("chat_step", "none"), u.get("user_age"),
+                    u.get("user_custom_name"), u.get("memory_notes", ""), u.get("vip_instruction", ""),
+                    u.get("admin_paused_until", 0), u.get("joined_at"), u.get("last_active")
+                ))
+
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
 
-    # Foydalanuvchilar jadvali
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -30,7 +121,6 @@ def init_db():
         )
     """)
 
-    # Eski bazaga yangi ustunlarni qo'shish (migratsiya)
     new_cols = [
         ("mode", "TEXT DEFAULT 'chat'"),
         ("chat_step", "TEXT DEFAULT 'none'"),
@@ -46,7 +136,6 @@ def init_db():
         except sqlite3.OperationalError:
             pass
 
-    # Oldindan @username orqali belgilangan VIP qoidalar jadvali
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS vip_rules (
             username TEXT PRIMARY KEY,
@@ -55,7 +144,6 @@ def init_db():
         )
     """)
 
-    # Global sozlamalar jadvali (masalan: ai_persona, custom_global_prompt)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
@@ -63,7 +151,6 @@ def init_db():
         )
     """)
 
-    # Suhbat tarixi (mahalliy kesh - 72 soat)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS chat_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,7 +162,6 @@ def init_db():
         )
     """)
 
-    # So'rovlar statistikasi
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,12 +171,17 @@ def init_db():
         )
     """)
 
-    # Standart global rejimni o'rnatish
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('ai_persona', 'kocha')")
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('custom_global_prompt', '')")
 
+    # Test user 123456 ni tozalash
+    cursor.execute("DELETE FROM users WHERE user_id IN (123456, 999)")
+
     conn.commit()
     conn.close()
+
+    restore_from_cloud_if_needed()
+    _async_cloud_backup()
 
 
 def add_or_update_user(
@@ -99,16 +190,11 @@ def add_or_update_user(
     first_name: Optional[str],
     last_name: Optional[str]
 ) -> bool:
-    """
-    Foydalanuvchini qo'shadi yoki yangilaydi.
-    Agar foydalanuvchi YANGI bo'lsa True qaytaradi (Adminga bildirishnoma yuborish uchun).
-    """
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     clean_uname = (username or "").lower().strip("@").strip()
 
-    # Oldindan @username ga yozilgan VIP qoida bormi tekshiramiz
     pre_vip = ""
     if clean_uname:
         cursor.execute("SELECT instruction FROM vip_rules WHERE username = ?", (clean_uname,))
@@ -140,11 +226,13 @@ def add_or_update_user(
 
     conn.commit()
     conn.close()
+    if is_new:
+        _async_cloud_backup()
     return is_new
 
 
 def get_user(user_id: int) -> Optional[Dict[str, Any]]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT user_id, username, first_name, last_name, mode, chat_step,
@@ -174,7 +262,7 @@ def get_user(user_id: int) -> Optional[Dict[str, Any]]:
 
 
 def set_user_mode(user_id: int, mode: str):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET mode = ? WHERE user_id = ?", (mode, user_id))
     conn.commit()
@@ -182,7 +270,7 @@ def set_user_mode(user_id: int, mode: str):
 
 
 def get_user_mode(user_id: int) -> str:
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT mode FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
@@ -198,7 +286,7 @@ def set_chat_state(
     custom_name: Optional[str] = None,
     age: Optional[str] = None
 ):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     if custom_name is not None and age is not None:
         cursor.execute(
@@ -219,10 +307,11 @@ def set_chat_state(
         cursor.execute("UPDATE users SET chat_step = ? WHERE user_id = ?", (step, user_id))
     conn.commit()
     conn.close()
+    _async_cloud_backup()
 
 
 def get_chat_state(user_id: int) -> Dict[str, Any]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT chat_step, user_custom_name, user_age, memory_notes, vip_instruction FROM users WHERE user_id = ?",
@@ -242,8 +331,7 @@ def get_chat_state(user_id: int) -> Dict[str, Any]:
 
 
 def update_user_memory(user_id: int, new_note: str):
-    """Foydalanuvchi haqida muhim faktni eslab qolish."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT memory_notes FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
@@ -255,32 +343,47 @@ def update_user_memory(user_id: int, new_note: str):
         cursor.execute("UPDATE users SET memory_notes = ? WHERE user_id = ?", (updated, user_id))
         conn.commit()
     conn.close()
+    _async_cloud_backup()
 
 
 # --- VIP / Maxsus muomala funksiyalari ---
 
 def set_vip_by_user_id(user_id: int, instruction: str):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
+    cursor.execute("SELECT username FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    uname = (row[0] or "").lower().strip("@").strip() if row else ""
+
     cursor.execute("UPDATE users SET vip_instruction = ? WHERE user_id = ?", (instruction.strip(), user_id))
+    if uname:
+        if instruction.strip():
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute(
+                "INSERT OR REPLACE INTO vip_rules (username, instruction, created_at) VALUES (?, ?, ?)",
+                (uname, instruction.strip(), now_str)
+            )
+        else:
+            cursor.execute("DELETE FROM vip_rules WHERE username = ?", (uname,))
+
     conn.commit()
     conn.close()
+    _async_cloud_backup()
 
 
 def set_vip_by_username(username: str, instruction: str) -> Optional[int]:
-    """
-    @username bo'yicha VIP qoida belgilash.
-    Agar foydalanuvchi bazada bo'lsa, user_id qaytaradi, aks holda vip_rules ga yozib qo'yadi.
-    """
     clean_uname = username.lower().strip("@").strip()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
 
-    cursor.execute(
-        "INSERT OR REPLACE INTO vip_rules (username, instruction, created_at) VALUES (?, ?, ?)",
-        (clean_uname, instruction.strip(), now_str)
-    )
+    if instruction.strip():
+        cursor.execute(
+            "INSERT OR REPLACE INTO vip_rules (username, instruction, created_at) VALUES (?, ?, ?)",
+            (clean_uname, instruction.strip(), now_str)
+        )
+    else:
+        cursor.execute("DELETE FROM vip_rules WHERE username = ?", (clean_uname,))
 
     cursor.execute("SELECT user_id FROM users WHERE LOWER(username) = ?", (clean_uname,))
     row = cursor.fetchone()
@@ -291,11 +394,12 @@ def set_vip_by_username(username: str, instruction: str) -> Optional[int]:
 
     conn.commit()
     conn.close()
+    _async_cloud_backup()
     return found_uid
 
 
 def get_all_vip_rules() -> List[Dict[str, Any]]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT username, instruction, created_at FROM vip_rules ORDER BY created_at DESC")
     rows = cursor.fetchall()
@@ -306,9 +410,8 @@ def get_all_vip_rules() -> List[Dict[str, Any]]:
 # --- Live Takeover (Admin 10 daqiqa suhbatga aralashishi) ---
 
 def pause_ai_for_user(user_id: int, minutes: int = 10):
-    """Admin foydalanuvchiga yozganda AI ni `minutes` daqiqaga jim qilish."""
     until_ts = int(time.time()) + (minutes * 60)
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET admin_paused_until = ? WHERE user_id = ?", (until_ts, user_id))
     conn.commit()
@@ -316,8 +419,7 @@ def pause_ai_for_user(user_id: int, minutes: int = 10):
 
 
 def resume_ai_for_user(user_id: int):
-    """AI ni darhol qayta yoqish."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET admin_paused_until = 0 WHERE user_id = ?", (user_id,))
     conn.commit()
@@ -325,11 +427,7 @@ def resume_ai_for_user(user_id: int):
 
 
 def is_ai_paused(user_id: int) -> Tuple[bool, int]:
-    """
-    AI ushbu foydalanuvchi uchun pauzadami?
-    (True, qolgan_soniya) yoki (False, 0) qaytaradi.
-    """
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT admin_paused_until FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
@@ -345,15 +443,16 @@ def is_ai_paused(user_id: int) -> Tuple[bool, int]:
 # --- Global AI Sozlamalari ---
 
 def set_setting(key: str, value: str):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
     conn.commit()
     conn.close()
+    _async_cloud_backup()
 
 
 def get_setting(key: str, default: str = "") -> str:
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
     row = cursor.fetchone()
@@ -368,9 +467,9 @@ def get_setting(key: str, default: str = "") -> str:
 def log_chat_message(user_id: int, sender: str, message_text: str):
     now_ts = int(time.time())
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cutoff_ts = now_ts - 259200  # 72 soatdan eskilarni o'chirish
+    cutoff_ts = now_ts - 259200  # 72 soat
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM chat_logs WHERE timestamp < ?", (cutoff_ts,))
     cursor.execute("""
@@ -384,7 +483,7 @@ def log_chat_message(user_id: int, sender: str, message_text: str):
 def get_local_chat_logs(user_id: int, limit: int = 30) -> List[Dict[str, Any]]:
     now_ts = int(time.time())
     cutoff_ts = now_ts - 259200
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT sender, message, created_at 
@@ -402,7 +501,7 @@ def get_local_chat_logs(user_id: int, limit: int = 30) -> List[Dict[str, Any]]:
 # --- Statistika ---
 
 def log_request(user_id: int, request_type: str = "ai_chat"):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute("""
@@ -414,7 +513,7 @@ def log_request(user_id: int, request_type: str = "ai_chat"):
 
 
 def get_stats() -> Dict[str, Any]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     today_str = datetime.now().strftime("%Y-%m-%d")
 
@@ -444,7 +543,7 @@ def get_stats() -> Dict[str, Any]:
 
 
 def get_recent_users(limit: int = 20) -> List[Dict[str, Any]]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT user_id, username, first_name, last_name, user_custom_name, user_age,
@@ -472,9 +571,8 @@ def get_recent_users(limit: int = 20) -> List[Dict[str, Any]]:
     return result
 
 
-def get_admin_chat_ids(admin_usernames: List[str]) -> List[int]:
-    """Bazadan adminlarning Telegram user_id larini topish (bildirishnoma yuborish uchun)."""
-    conn = sqlite3.connect(DB_PATH)
+def get_admin_chat_ids(admin_usernames: List[str], admin_ids: Optional[set] = None) -> List[int]:
+    conn = _get_conn()
     cursor = conn.cursor()
     placeholders = ",".join(["?"] * len(admin_usernames))
     cursor.execute(
@@ -483,4 +581,7 @@ def get_admin_chat_ids(admin_usernames: List[str]) -> List[int]:
     )
     rows = cursor.fetchall()
     conn.close()
-    return [r[0] for r in rows]
+    ids = {r[0] for r in rows}
+    if admin_ids:
+        ids.update(admin_ids)
+    return list(ids)
