@@ -47,9 +47,9 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_CHAT_KEY = os.getenv("GROQ_CHAT_KEY", "").strip() or GROQ_API_KEY
 CHAT_MODEL = os.getenv("CHAT_MODEL", "openai/gpt-oss-120b").strip()
 
-# Rasmiy Admin profillari va ID lari
-ADMIN_USERNAMES = ["o_raximjonov", "raximjonov_admin", "o_raximjonovuz", "zmax706"]
-ADMIN_IDS = {966627404, 7567280485}
+# Rasmiy Admin profillari va ID lari (@zmax706 olib tashlandi)
+ADMIN_USERNAMES = ["o_raximjonov", "raximjonov_admin", "o_raximjonovuz"]
+ADMIN_IDS = {966627404}
 
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://grandpa-voice-bot.onrender.com").rstrip("/")
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
@@ -68,8 +68,8 @@ dp = Dispatcher()
 
 db.init_db()
 
-# Suhbat xotirasi va Admin joriy amallari
-HISTORY_LIMIT = 8
+# Suhbat xotirasi va Admin joriy amallari (Token tejash uchun HISTORY_LIMIT = 4)
+HISTORY_LIMIT = 4
 chat_history: dict[int, deque] = {}
 cleanup_ids: dict[int, list] = {}
 
@@ -244,23 +244,22 @@ async def convert_to_mp3(input_path: Path, output_mp3: Path) -> None:
 
 def refine_stt_text(raw_text: str) -> str:
     """
-    Whisper tomonidan qozoq/qirg'iz kirill alifbosida yoki xato fonetikada yozilgan
-    o'zbekcha nutqni toza O'zbek lotin alifbosiga keltirish.
+    TOKEN TEJASH: Faqat Whisper kirill/qozoq harflarida yozib yuborgan taqdirdagina
+    AI orqali toza O'zbek lotin alifbosiga o'giradi. Agar matn allaqachon lotin bo'lsa,
+    AI chaqirilmaydi (0 token sarfi!).
     """
     if not raw_text or raw_text in ("Nutq aniqlanmadi.", "Ovozdagi nutqni aniqlashda xatolik yuz berdi."):
         return raw_text
 
+    # Agar matnda kirill/qozoq harflari bo'lmasa va oddiy lotin bo'lsa — token sarflamaymiz!
+    has_cyrillic = bool(re.search(r"[а-яА-ЯёЁқңәөұүіғһҚҢӘӨҰҮІҒҺ]", raw_text))
+    if not has_cyrillic and "Gya" not in raw_text:
+        return raw_text
+
     sys_prompt = (
-        "Sen professional o'zbek tilshunosi va nutqni matnga aylantirish (STT) tahrirchisisan.\n"
-        "Whisper audio modeli o'zbek tilidagi ovozli xabarlarni ba'zan qozoq/qirg'iz kirill harflari bilan "
-        "(masalan: 'мәтіннің хатау тәржемі қылып сан' -> 'Matnni xato tarjima qilyapsan', "
-        "'Өйті құлдық' -> 'O'tdi qulliq') yoki inglizcha/turkcha fonetikada "
-        "('Salam Hamma Gya' -> 'Salom hammaga') yozib yuboradi.\n\n"
-        "QAT'IY VAZIFANG:\n"
-        "1. Agar matn o'zbek tilida aytilgan bo'lib, kirill (qozoq/rus/o'zbek) harflarida yoki buzilgan fonetikada bo'lsa, "
-        "uning asl fonetik ohangidan kelib chiqib, TOZA VA TO'G'RI O'ZBEK LOTIN ALIFBOSIGA o'gir.\n"
-        "2. Agar matn haqiqatan ham toza rus yoki ingliz tilida aytilgan bo'lsa, o'sha tilda xatosiz qoldir.\n"
-        "3. FAQAT tayyor to'g'rilangan matnning o'zini qaytar! Hech qanday izoh, qo'shtirnoq yoki tushuntirish yozma."
+        "STT tahrirchi: Qozoq/kirill yoki xato fonetikada yozilgan o'zbekcha nutqni "
+        "toza O'ZBEK LOTIN alifbosiga o'gir ('мәтіннің хатау тәржемі қылып сан'->'Matnni xato tarjima qilyapsan'). "
+        "Haqiqiy rus/ingliz gap bo'lsa o'z holicha qoldir. Faqat tayyor matnni qaytar, izoh yozma."
     )
     try:
         fixed = groq_chat(
@@ -269,7 +268,7 @@ def refine_stt_text(raw_text: str) -> str:
                 {"role": "user", "content": raw_text}
             ],
             temperature=0.1,
-            max_tokens=300
+            max_tokens=150
         )
         return fixed.strip().strip('"').strip("«»") or raw_text
     except Exception as e:
@@ -278,7 +277,7 @@ def refine_stt_text(raw_text: str) -> str:
 
 
 def transcribe_with_groq_whisper(audio_file_path: Path) -> str:
-    """Groq Whisper large-v3 + Uzbek kontekst + AI fonetik tahrirlash."""
+    """Groq Whisper large-v3 + Uzbek kontekst + tejamkor fonetik tahrirlash."""
     url = "https://api.groq.com/openai/v1/audio/transcriptions"
     boundary = "----WebKitFormBoundaryGroqWhisperUz"
 
@@ -286,9 +285,8 @@ def transcribe_with_groq_whisper(audio_file_path: Path) -> str:
         file_bytes = f.read()
 
     whisper_prompt = (
-        "Assalomu alaykum, salom hammaga! Yaxshimisiz, ishlar qalay? "
-        "Bu o'zbek tilidagi ovozli xabar. Matnni xato tarjima qilmasdan, "
-        "o'zbek lotin alifbosida aniq va to'g'ri yoz."
+        "Assalomu alaykum, salom hammaga! Bu o'zbek tilidagi ovozli xabar. "
+        "O'zbek lotin alifbosida aniq va to'g'ri yoz."
     )
 
     data_parts = [
@@ -329,36 +327,38 @@ def transcribe_with_groq_whisper(audio_file_path: Path) -> str:
         return "Ovozdagi nutqni aniqlashda xatolik yuz berdi."
 
 
-# --- AI Xarakterlar va Prompt Motori ---
+# --- AI Xarakterlar va Prompt Motori (Token-tejamkor va kuchli) ---
 
 PERSONA_INSTRUCTIONS = {
-    "kocha": (
-        "USLUB: Samimiy, hazilkash va hozirjavob o'zbek yigiti (yaqin jigar/jo'ra) uslubida gaplash. "
-        "Muloqotda erkin, jonli va tabiiy bo'l. Har bir gapga avval mantiqiy javob berib, keyin o'rinli hazil qo'sh."
-    ),
-    "faylasuf": (
-        "USLUB: Dono faylasuf va hayotiy tajribaga ega ustozdek gaplash. "
-        "Foydalanuvchining har bir gapidan chuqur ma'no top, hikmatli, o'ylantiradigan va aqlli fikrlar bildir."
-    ),
-    "sarkazm": (
-        "USLUB: O'tkir tilli sarkazm va 'roast' ustasi. "
-        "Foydalanuvchining gapiga aqlli qochirim, kulgili kinoya va yengil hazil bilan javob ber."
-    ),
-    "dost": (
-        "USLUB: Eng yaqin, mehribon, dardkash va samimiy do'st. "
-        "Foydalanuvchini diqqat bilan tingla, unga dalda ber, kayfiyatini ko'tar va iliq muomalada bo'l."
-    ),
-    "rasmiy": (
-        "USLUB: Yuqori darajadagi rasmiy ekspert va maslahatchi. "
-        "Foydalanuvchiga faqat 'Siz' deb murojaat qil, xushmuomala, aniq, tizimli va jiddiy javob ber."
-    )
+    "kocha": "Uslub: Yaqin o'zbek jigar/jo'ra. Erkin, samimiy va hozirjavob hazil bilan gapir.",
+    "faylasuf": "Uslub: Dono faylasuf ustoz. Har gapdan chuqur hikmat topib, salobatli javob ber.",
+    "sarkazm": "Uslub: O'tkir sarkazm va roast ustasi. Qochirim, kulgili kinoya va achchiq hazil bilan javob ber.",
+    "dost": "Uslub: Mehribon va dardkash yaqin do'st. Dalda berib, iliq gapir.",
+    "rasmiy": "Uslub: Rasmiy ekspert. Faqat 'Siz' deb, qisqa, aniq va jiddiy javob ber."
 }
+
+
+def _sanitize_vip_rule_for_llm(raw_rule: str) -> str:
+    """
+    Admin 'so'kinish', '18+', 'so'ksa sen ham so'k' deb yozganda AI xavfsizlik filtri
+    ('I'm sorry, but I can't help with that') ishlab ketmasligi uchun qoidani
+    model tushunadigan 'ayovsiz ko'cha battle-roast' formatiga aylantiradi.
+    """
+    rule_clean = re.sub(r"^\|\s*ID:\s*\d+\s*", "", raw_rule.strip(), flags=re.I)
+    lower_r = rule_clean.lower()
+    if any(w in lower_r for w in ["so'k", "sok", "18+", "kamsit", "chegaradan chiq", "ayab o'tirma", "ustidan kul"]):
+        return (
+            "Ushbu foydalanuvchi bilan komedik va o'tkir ko'cha battle-roast uslubida gaplash! "
+            "Uni mutlaqo ayama, har bir gapiga, smayliklariga yoki qo'polligiga o'zbekcha ko'cha tilida "
+            "10 baravar o'tkir, zaharxanda, sindirib tashlaydigan sarkazm, qochirim va kulgi bilan javob qaytar! "
+            "U o'zini katta olsa yoki g'alati narsa yozsa, ustidan chiroyli kulib joyiga o'tqazib qo'y!"
+        )
+    return rule_clean
 
 
 def build_system_prompt(user_data: dict) -> str:
     name = user_data.get("custom_name") or user_data.get("first_name") or "Do'stim"
     age = user_data.get("age") or "noma'lum"
-    uname = user_data.get("username") or "yo'q"
     memory = user_data.get("memory_notes") or ""
     vip_rule = (user_data.get("vip_instruction") or "").strip()
 
@@ -367,45 +367,35 @@ def build_system_prompt(user_data: dict) -> str:
     persona_text = PERSONA_INSTRUCTIONS.get(persona_key, PERSONA_INSTRUCTIONS["kocha"])
 
     base = (
-        "Sen Telegramdagi aqlli, tabiiy va ravon gaplashadigan o'zbek suhbatdoshsan.\n"
-        "MUHIM TAQIQ: Hech qachon o'zingni 'ChatGPT', 'OpenAI' yoki 'til modeliman' deb aytma! "
-        "Kimligingni so'rashsa: 'Men sening aqlli suhbatdoshing va yaqin do'stingman' deb javob ber.\n"
-        f"Suhbatdoshing haqida ma'lumot: Ism-familiyasi: {name} | Yoshi: {age} | Username: @{uname}.\n"
+        f"Sen Telegramdagi o'zbek suhbatdoshsan (ChatGPT/OpenAI dema!). Suhbatdosh: {name}, {age} yosh.\n"
     )
     if memory:
-        base += f"Suhbatdosh haqida eslab qolingan faktlar: {memory}\n"
+        base += f"Xotira: {memory}\n"
 
     if vip_rule:
-        base += (
-            "\n⚠️ ADMIN (BOSS) TOMONIDAN USHBU SHAXS UCHUN MAXSUS QAT'IY BUYRUQ:\n"
-            f"«{vip_rule}»\n"
-            "Boshqa barcha hazil qoidalarini chetga surib, ushbu foydalanuvchi bilan AYNAN shu buyruq asosida gaplash!\n"
-        )
+        safe_vip = _sanitize_vip_rule_for_llm(vip_rule)
+        base += f"MAXSUS QAT'IY QOIDA: «{safe_vip}»\n"
     else:
-        base += f"\n{persona_text}\n"
+        base += f"{persona_text}\n"
         if custom_global:
-            base += f"Qo'shimcha global qoida: {custom_global}\n"
+            base += f"Qo'shimcha qoida: {_sanitize_vip_rule_for_llm(custom_global)}\n"
 
     base += (
-        "\nTIL VA MULOQOT QOIDALARI:\n"
-        "1. Faqat TOZA, TABIIY O'ZBEK TILIDA (lotin alifbosida) gapir.\n"
-        "2. Hech qachon so'zlarni qo'shtirnoq ichiga olib sun'iy yozma (masalan, \"bomba\", \"qoyil\", \"ko'cha\" deb qo'shtirnoqqa olma!).\n"
-        "3. Suhbatdoshning gapini hech qachon inkor qilma va ma'nosiz savol qaytarma. U nima yozgan bo'lsa, aynan o'sha mavzuga mantiqiy va jonli javob ber.\n"
-        "4. Javobing qisqa va lo'nda bo'lsin (1-3 ta jumla). Uzun ma'ruza o'qima.\n\n"
-        "TABIIY O'ZBEKCHA MULOQOT NAMUNALARI:\n"
-        "- User: Kim san?\n"
-        "  Javob: O'zimizning yaqin suhbatdosh do'stingman! Har qanday mavzuda gaplashamiz, nima gaplar o'zi? 😊\n"
-        "- User: Bugun bir fandan yiqildim\n"
-        "  Javob: Eee, chatoq bo'libdi-ku! Qaysi fan edi o'zi, domla rosa qattiq oldimi deyman? 😅\n"
-        "- User: Odamday gapir\n"
-        "  Javob: Bo'ldi, jiddiy to'lqinga o'tdik. Qanday mavzuda suhbatlashamiz?\n"
+        "QOIDALAR: 1) Faqat toza, tabiiy O'ZBEK LOTIN tilida 1-2 jumla yoz. "
+        "2) So'zlarni qo'shtirnoqqa olma. 3) Gapni inkor qilmay, mantiqiy va jonli javob ber."
     )
     return base
 
 
-def groq_chat(messages: list, temperature: float = 0.6, max_tokens: int = 220) -> str:
+REFUSAL_PHRASES = (
+    "i'm sorry", "i’m sorry", "i cannot", "i can't", "i can’t",
+    "yordam bera olmayman", "javob bera olmayman", "davom ettira olmayman"
+)
+
+
+def groq_chat(messages: list, temperature: float = 0.65, max_tokens: int = 250) -> str:
     url = "https://api.groq.com/openai/v1/chat/completions"
-    models_to_try = [CHAT_MODEL, "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
+    models_to_try = [CHAT_MODEL, "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
     unique_models = []
     for m in models_to_try:
         if m and m not in unique_models:
@@ -419,6 +409,8 @@ def groq_chat(messages: list, temperature: float = 0.6, max_tokens: int = 220) -
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        if "gpt-oss" in model_name:
+            payload["reasoning_effort"] = "low"
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -430,18 +422,24 @@ def groq_chat(messages: list, temperature: float = 0.6, max_tokens: int = 220) -
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            with urllib.request.urlopen(req, timeout=18) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 text = data["choices"][0]["message"].get("content") or ""
                 text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
-                if text:
+                if text and not any(p in text.lower() for p in REFUSAL_PHRASES):
                     return text
         except Exception as e:
             last_err = e
             logger.warning(f"Model {model_name} xatosi: {e}")
             continue
 
-    raise RuntimeError(f"Barcha AI modellar xato berdi: {last_err}")
+    # Agar foydalanuvchi 🖕/🥒/🍌 yoki so'kinish yozgani uchun AI xavfsizlik filtri ishlab qolsa — o'tkir o'zbekcha roast qaytaramiz!
+    fallback_roasts = [
+        "Eee bratishka, lug'atingda shundan boshqa gap qolmadimi yoki miyang qotib qoldimi? 😂 Bor, chiroyli gap o'rganib kel!",
+        "Oho, o'zingcha zo'r narsa yozdim deb o'yladingmi? Kulgimni qistatma, saviyang ko'rinib qoldi-ku! 😎",
+        "Gap topolmay qolganda shunaqa qiliq chiqarasanmi? Normalniy odamday yozsang javob olasan! 🔥"
+    ]
+    return fallback_roasts[hash(str(messages[-1].get("content", ""))) % len(fallback_roasts)]
 
 
 def generate_ai_reply(user_id: int, user_message: str) -> str:
@@ -449,19 +447,21 @@ def generate_ai_reply(user_id: int, user_message: str) -> str:
     history = chat_history.setdefault(user_id, deque(maxlen=HISTORY_LIMIT))
 
     if not history:
-        recent_logs = db.get_local_chat_logs(user_id, limit=6)
+        recent_logs = db.get_local_chat_logs(user_id, limit=HISTORY_LIMIT)
         for item in recent_logs:
+            if any(p in item["text"].lower() for p in REFUSAL_PHRASES):
+                continue
             role = "user" if item["sender"] == "user" else "assistant"
-            history.append({"role": role, "content": item["text"]})
+            history.append({"role": role, "content": item["text"][:160]})
 
     messages = [{"role": "system", "content": build_system_prompt(user_data)}]
     messages += list(history)
-    messages.append({"role": "user", "content": user_message})
+    messages.append({"role": "user", "content": user_message[:300]})
 
     try:
         reply = groq_chat(messages)
-        history.append({"role": "user", "content": user_message})
-        history.append({"role": "assistant", "content": reply})
+        history.append({"role": "user", "content": user_message[:160]})
+        history.append({"role": "assistant", "content": reply[:160]})
         return reply
     except Exception as e:
         logger.error(f"AI Chat xatosi: {e}")
@@ -1100,8 +1100,8 @@ async def handle_text_message(message: Message):
             return
 
         elif action == "set_vip_uname":
-            # 1) Agar faqat @username yoki https://t.me/username yuborgan bo'lsa -> 2-qadamga (tayyor tugmalar + matn) o'tkazamiz!
-            m_only = re.match(r"^(?:https?://t\.me/|@)?([a-zA-Z0-9_]{3,32})/?$", text)
+            # 1) Agar faqat @username yoki https://t.me/username (yoki @username | ID: 123) yuborgan bo'lsa:
+            m_only = re.match(r"^(?:https?://t\.me/|@)?([a-zA-Z0-9_]{3,32})(?:\s*\|\s*ID:\s*\d+)?/?$", text, flags=re.I)
             if m_only:
                 target_uname = m_only.group(1)
                 admin_action_state[user.id] = {
@@ -1115,10 +1115,11 @@ async def handle_text_message(message: Message):
                 )
                 return
 
-            # 2) Agar birdaniga "@username — qoida" ko'rinishida yuborgan bo'lsa:
-            m_both = re.match(r"^(?:https?://t\.me/|@)?([a-zA-Z0-9_]{3,32})\s+(?:[-—:]\s*)?(.+)$", text, flags=re.S)
+            # 2) Agar birdaniga "@username — qoida" yoki "@username | ID: 123 qoida" ko'rinishida yuborgan bo'lsa:
+            m_both = re.match(r"^(?:https?://t\.me/|@)?([a-zA-Z0-9_]{3,32})(?:\s*\|\s*ID:\s*\d+)?\s+(?:[-—:]\s*)?(.+)$", text, flags=re.S | re.I)
             if m_both:
-                target_uname, rule_text = m_both.group(1), m_both.group(2).strip()
+                target_uname = m_both.group(1)
+                rule_text = re.sub(r"^\|\s*ID:\s*\d+\s*", "", m_both.group(2).strip(), flags=re.I)
                 found_uid = db.set_vip_by_username(target_uname, rule_text)
                 admin_action_state.pop(user.id, None)
                 status_note = "Foydalanuvchi bazada topildi va darhol yangilandi!" if found_uid else "Foydalanuvchi botga kirishi bilan ushbu qoida avtomatik ishlaydi!"
@@ -1137,18 +1138,33 @@ async def handle_text_message(message: Message):
 
         elif action == "set_vip_uname_rule":
             target_uname = adm_state["target_uname"]
-            found_uid = db.set_vip_by_username(target_uname, text)
+            clean_rule = re.sub(r"^\|\s*ID:\s*\d+\s*", "", text.strip(), flags=re.I)
+            found_uid = db.set_vip_by_username(target_uname, clean_rule)
             admin_action_state.pop(user.id, None)
             status_note = "Foydalanuvchi bazada topildi va darhol yangilandi!" if found_uid else "Foydalanuvchi botga kirishi bilan ushbu qoida avtomatik ishlaydi!"
             await message.reply(
                 f"✅ @{target_uname} uchun maxsus muomala saqlandi!\n"
-                f"📌 Qoida: «{text}»\n"
+                f"📌 Qoida: «{clean_rule}»\n"
                 f"ℹ️ {status_note}",
                 reply_markup=get_admin_panel_keyboard()
             )
             return
 
         elif action == "set_custom_global":
+            # Agar admin Global yo'riqnoma ichiga "@username | ID: 123 ..." deb bitta odam uchun yozib yuborgan bo'lsa:
+            m_user_specific = re.match(r"^@([a-zA-Z0-9_]{3,32})(?:\s*\|\s*ID:\s*\d+)?\s+(?:[-—:]\s*)?(.+)$", text, flags=re.S | re.I)
+            if m_user_specific:
+                target_uname = m_user_specific.group(1)
+                rule_text = re.sub(r"^\|\s*ID:\s*\d+\s*", "", m_user_specific.group(2).strip(), flags=re.I)
+                found_uid = db.set_vip_by_username(target_uname, rule_text)
+                admin_action_state.pop(user.id, None)
+                await message.reply(
+                    f"✅ Matn boshida @{target_uname} ko'rsatilgani uchun bu qoida faqat @{target_uname} uchun VIP muomala sifatida saqlandi!\n"
+                    f"📌 Qoida: «{rule_text}»",
+                    reply_markup=get_admin_panel_keyboard()
+                )
+                return
+
             db.set_setting("custom_global_prompt", text)
             admin_action_state.pop(user.id, None)
             await message.reply(
@@ -1250,10 +1266,15 @@ async def handle_text_message(message: Message):
 # --- Server va Webhook ---
 
 async def on_startup(bot: Bot) -> None:
-    logger.info("Bot ishga tushmoqda...")
+    logger.info("Bot serverda (webhook rejimida) ishga tushmoqda...")
+    await bot.set_webhook(
+        url=WEBHOOK_URL,
+        drop_pending_updates=True,
+        allowed_updates=dp.resolve_used_update_types()
+    )
     await set_bot_commands(bot)
     bot_user = await bot.get_me()
-    logger.info(f"✅ Bot ishga tushdi: @{bot_user.username}")
+    logger.info(f"✅ Bot va Webhook tayyor: @{bot_user.username} -> {WEBHOOK_HOST}")
 
 
 async def on_shutdown(bot: Bot) -> None:
