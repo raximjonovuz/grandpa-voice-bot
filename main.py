@@ -74,11 +74,11 @@ async def check_channel_subscription(user_id: int) -> bool:
     """Foydalanuvchi kanalga a'zo bo'lganmi yoki yo'qligini tekshirish."""
     try:
         member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=user_id)
-        # creator, administrator, member statuslari ruxsat berilgan
         return member.status in ["creator", "administrator", "member"]
     except Exception as e:
-        logger.error(f"Obuna tekshirishda xatolik: {e}")
-        return True  # Xatolik bo'lsa foydalanuvchini bloklab qo'ymaslik uchun
+        logger.warning(f"Obuna tekshirish natijasi: {e}")
+        # PARTICIPANT_ID_INVALID yoki left bo'lsa a'zo emas
+        return False
 
 
 def get_subscribe_keyboard() -> InlineKeyboardMarkup:
@@ -101,10 +101,10 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
 
 
 async def set_bot_commands(bot: Bot):
+    """Foydalanuvchilarga faqat start va help ko'rinadi. /admin menyuda ko'rinmaydi!"""
     commands = [
-        BotCommand(command="start", description="Botni ishga tushirish va rejim tanlash"),
-        BotCommand(command="help", description="Yordam va qo'llanma"),
-        BotCommand(command="admin", description="Admin paneli (statistika)")
+        BotCommand(command="start", description="Botni ishga tushirish"),
+        BotCommand(command="help", description="Yordam va qo'llanma")
     ]
     await bot.set_my_commands(commands)
 
@@ -170,19 +170,19 @@ async def handle_check_subscription(callback: CallbackQuery):
     db.add_or_update_user(user.id, user.username, user.first_name, user.last_name)
     is_sub = await check_channel_subscription(user.id)
 
-    if is_sub:
+    if is_sub or is_admin_user(user.username, user.id):
         await callback.answer("✅ Obuna tasdiqlandi!")
         try:
             await callback.message.delete()
         except Exception:
             pass
         await callback.message.answer(
-            f"Xush kelibsiz, {user.first_name}! 🎙️✨\n\n"
-            "Pastdagi bo'limlardan birini tanlang va ovozli xabar yuboring:\n"
-            "1. 🔁 **Teskari ovoz**\n"
-            "2. 📝 **Matnga aylantirish**",
-            reply_markup=get_main_keyboard(),
-            parse_mode="Markdown"
+            f"Assalomu alaykum, {user.first_name}! 🎙️✨\n\n"
+            "Pastdagi bo'limlardan birini tanlang va ovozli xabar (voice) yuboring:\n"
+            "1. 🔁 Teskari ovoz\n"
+            "2. 📝 Matnga aylantirish\n\n"
+            "📢 Homiy kanal: @NovaTechLab",
+            reply_markup=get_main_keyboard()
         )
     else:
         await callback.answer("❌ Hali kanalga a'zo bo'lmadingiz. Iltimos, obuna bo'ling!", show_alert=True)
@@ -195,17 +195,16 @@ async def handle_start(message: Message):
     bot_info = await bot.get_me()
     username = bot_info.username or "bot"
 
-    # Admin bo'lsa obunani tekshirmasdan to'g'ridan-to'g'ri o'tkazish
+    # Kanal obunasini tekshirish
     if not is_admin_user(user.username, user.id):
         is_sub = await check_channel_subscription(user.id)
         if not is_sub:
             await message.reply(
-                "👋 **Assalomu alaykum!**\n\n"
-                "Botdan to'liq foydalanish uchun rasmiy kanalimizga a'zo bo'ling:\n"
+                "👋 Assalomu alaykum!\n\n"
+                "Botdan foydalanish uchun rasmiy kanalimizga a'zo bo'ling:\n"
                 "👉 @NovaTechLab\n\n"
-                "Obuna bo'lgach, **«✅ A'zo bo'ldim»** tugmasini bosing:",
-                reply_markup=get_subscribe_keyboard(),
-                parse_mode="Markdown"
+                "Obuna bo'lgach, «✅ A'zo bo'ldim» tugmasini bosing:",
+                reply_markup=get_subscribe_keyboard()
             )
             return
 
@@ -213,20 +212,22 @@ async def handle_start(message: Message):
         text = (
             f"Assalomu alaykum, hurmatli Admin ({user.first_name})! 👑\n\n"
             "Qanday amal bajaramiz? Quyidagi bo'limlardan birini tanlang:\n\n"
-            "1. 🔁 **Teskari ovoz**\n"
-            "2. 📝 **Matnga aylantirish**\n\n"
+            "1. 🔁 Teskari ovoz\n"
+            "2. 📝 Matnga aylantirish\n\n"
+            "⚙️ Boshqaruv: /admin buyrug'ini qo'lda kiritib statistikani ko'rishingiz mumkin.\n\n"
             f"@{username}"
         )
     else:
         text = (
             f"Assalomu alaykum, {user.first_name}! 🎙️✨\n\n"
             "Ovoz bilan qanday ishlaymiz? Avval quyidagi bo'limlardan birini tanlang:\n\n"
-            "1. 🔁 **Teskari ovoz**\n"
-            "2. 📝 **Matnga aylantirish**\n\n"
-            "Kerakli bo'limni bosing, so'ng ovozli xabar (voice) yuboring!\n\n"
+            "1. 🔁 Teskari ovoz\n"
+            "2. 📝 Matnga aylantirish\n\n"
+            "Kerakli bo'limni bosing, so'ng ovozli xabar yuboring!\n\n"
+            "📢 Rasmiy kanal: @NovaTechLab\n"
             f"@{username}"
         )
-    await message.reply(text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    await message.reply(text, reply_markup=get_main_keyboard())
 
 
 @dp.message(F.text == "🔁 Teskari ovoz")
@@ -243,10 +244,9 @@ async def set_reverse_mode(message: Message):
 
     db.set_user_mode(user.id, "reverse")
     await message.reply(
-        "✅ **\"Teskari ovoz\"** rejimi tanlandi!\n\n"
+        "✅ «Teskari ovoz» rejimi tanlandi!\n\n"
         "Endi menga ovozli xabar (voice) yuboring. Men uni teskarisiga o'girib beraman.",
-        reply_markup=get_main_keyboard(),
-        parse_mode="Markdown"
+        reply_markup=get_main_keyboard()
     )
 
 
@@ -264,10 +264,9 @@ async def set_text_mode(message: Message):
 
     db.set_user_mode(user.id, "text")
     await message.reply(
-        "✅ **\"Matnga aylantirish\"** rejimi tanlandi!\n\n"
+        "✅ «Matnga aylantirish» rejimi tanlandi!\n\n"
         "Endi menga ovozli xabar (voice) yuboring. Men undagi gaplarni matn qilib yozib beraman.",
-        reply_markup=get_main_keyboard(),
-        parse_mode="Markdown"
+        reply_markup=get_main_keyboard()
     )
 
 
@@ -282,8 +281,9 @@ async def handle_help(message: Message):
         "1. Pastdagi tugmalardan kerakli bo'limni tanlang:\n"
         "   • 🔁 Teskari ovoz\n"
         "   • 📝 Matnga aylantirish\n"
-        "2. So'ng mikrofonni bosib ovozli xabar (voice) yuboring.\n"
+        "2. Mikrofonni bosib ovozli xabar yuboring.\n"
         "3. Bot tanlangan bo'lim bo'yicha darhol javob qaytaradi!\n\n"
+        "📢 Kanal: @NovaTechLab\n"
         f"@{username}"
     )
     await message.reply(text, reply_markup=get_main_keyboard())
@@ -294,13 +294,10 @@ async def handle_admin(message: Message):
     user = message.from_user
     db.add_or_update_user(user.id, user.username, user.first_name, user.last_name)
 
+    # Faqat admin qo'lda kiritganda ishlaydi
     if not is_admin_user(user.username, user.id):
-        uname = f"@{user.username}" if user.username else "username yo'q"
-        await message.reply(
-            f"Kechirasiz, ushbu buyruq faqat bot admini uchun!\n"
-            f"Sizning profilingiz: {uname} (ID: {user.id})",
-            reply_markup=get_main_keyboard()
-        )
+        # Oddiy foydalanuvchiga bunday buyruq yo'qligini aytadi
+        await message.reply("Noma'lum buyruq. Yordam uchun /help ni bosing.", reply_markup=get_main_keyboard())
         return
 
     stats = db.get_stats()
@@ -332,7 +329,6 @@ async def handle_voice(message: Message):
     user = message.from_user
     db.add_or_update_user(user.id, user.username, user.first_name, user.last_name)
 
-    # Obuna tekshiruvi (faqat oddiy userlar uchun)
     if not is_admin_user(user.username, user.id):
         is_sub = await check_channel_subscription(user.id)
         if not is_sub:
@@ -368,9 +364,9 @@ async def handle_voice(message: Message):
 
             clean_text = recognized_text.replace("`", "'")
             response_text = (
-                "📝 **Ovozdagi matn:**\n\n"
+                "📝 Ovozdagi matn:\n\n"
                 f"`{clean_text}`\n\n"
-                "👆 *Matn ustiga bosing, avtomatik nusxalanadi!*"
+                "👆 Matn ustiga bosing, avtomatik nusxalanadi!"
             )
 
             await message.reply(
@@ -438,13 +434,8 @@ async def handle_text(message: Message):
 async def on_startup(bot: Bot) -> None:
     logger.info("Bot ishga tushmoqda...")
     await set_bot_commands(bot)
-    await bot.set_webhook(
-        url=WEBHOOK_URL,
-        drop_pending_updates=True,
-        allowed_updates=dp.resolve_used_update_types()
-    )
     bot_user = await bot.get_me()
-    logger.info(f"✅ Webhook o'rnatildi! Bot: @{bot_user.username}")
+    logger.info(f"✅ Bot ishga tushdi: @{bot_user.username}")
 
 
 async def on_shutdown(bot: Bot) -> None:
