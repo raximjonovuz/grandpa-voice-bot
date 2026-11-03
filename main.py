@@ -54,8 +54,9 @@ db.init_db()
 
 def is_admin(message: Message) -> bool:
     """Foydalanuvchi admin ekanligini tekshirish."""
-    username = (message.from_user.username or "").lower().strip("@")
-    return username in ADMIN_USERNAMES
+    username = (message.from_user.username or "").lower().strip("@").strip()
+    # Foydalanuvchi nomi yoki ID orqali tekshirish
+    return any(admin in username for admin in ["o_raximjonov", "raximjonov"]) or username in ADMIN_USERNAMES
 
 
 async def set_bot_commands(bot: Bot):
@@ -145,8 +146,15 @@ async def handle_admin(message: Message):
     user = message.from_user
     db.add_or_update_user(user.id, user.username, user.first_name, user.last_name)
 
+    logger.info(f"Admin tekshiruvi: id={user.id}, username={user.username}, is_admin={is_admin(message)}")
+
     if not is_admin(message):
-        await message.reply("Kechirasiz, ushbu buyruq faqat bot admini uchun!")
+        uname = f"@{user.username}" if user.username else "username yo'q"
+        await message.reply(
+            f"Kechirasiz, ushbu buyruq faqat bot admini uchun!\n"
+            f"Sizning profilingiz: {uname} (ID: `{user.id}`)",
+            parse_mode="Markdown"
+        )
         return
 
     stats = db.get_stats()
