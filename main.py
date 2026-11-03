@@ -11,7 +11,10 @@ from aiogram.types import (
     FSInputFile, 
     BotCommand, 
     ReplyKeyboardMarkup, 
-    KeyboardButton
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery
 )
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
@@ -36,6 +39,10 @@ BOT_TOKEN = raw_token.split("//")[0].split("#")[0].strip().strip('"').strip("'")
 
 # Admin tekshiruvi uchun
 ADMIN_USERNAMES = ["o_raximjonov", "o_raximjonovuz"]
+
+# Majburiy obuna kanali
+REQUIRED_CHANNEL = "@NovaTechLab"
+CHANNEL_URL = "https://t.me/NovaTechLab"
 
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://grandpa-voice-bot.onrender.com").rstrip("/")
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
@@ -63,8 +70,27 @@ def is_admin_user(username: str, user_id: int) -> bool:
     return any(a in uname for a in ["o_raximjonov", "raximjonov"]) or uname in ADMIN_USERNAMES
 
 
+async def check_channel_subscription(user_id: int) -> bool:
+    """Foydalanuvchi kanalga a'zo bo'lganmi yoki yo'qligini tekshirish."""
+    try:
+        member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=user_id)
+        # creator, administrator, member statuslari ruxsat berilgan
+        return member.status in ["creator", "administrator", "member"]
+    except Exception as e:
+        logger.error(f"Obuna tekshirishda xatolik: {e}")
+        return True  # Xatolik bo'lsa foydalanuvchini bloklab qo'ymaslik uchun
+
+
+def get_subscribe_keyboard() -> InlineKeyboardMarkup:
+    """Kanalga a'zo bo'lish uchun inline tugmalar."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Kanalga a'zo bo'lish", url=CHANNEL_URL)],
+        [InlineKeyboardButton(text="✅ A'zo bo'ldim (Tekshirish)", callback_data="check_sub")]
+    ])
+
+
 def get_main_keyboard() -> ReplyKeyboardMarkup:
-    """Pastda doimiy turadigan qulay bo'limlar menyusi."""
+    """Pastda doimiy turadigan bo'limlar menyusi."""
     kb = [
         [
             KeyboardButton(text="🔁 Teskari ovoz"),
@@ -84,9 +110,8 @@ async def set_bot_commands(bot: Bot):
 
 
 async def process_reverse_voice(input_path: Path, output_path: Path) -> None:
-    """Ovoz parametrlarini o'zgartirmasdan faqat toza teskarisiga o'girish."""
+    """Ovoz parametrlarini o'zgartirmasdan sof teskarisiga o'girish."""
     async with processing_semaphore:
-        # Shovqinni tozalash olib tashlandi, sof teskari ovoz
         cmd = [
             "ffmpeg",
             "-y",
@@ -136,7 +161,31 @@ def recognize_speech_from_wav(wav_path: Path) -> str:
         except (sr.UnknownValueError, sr.RequestError):
             continue
 
-    return "Nutqni aniqlab bo'lmadi (ovoz juda past yoki shovqinli bo'lishi mumkin)."
+    return "Nutqni aniqlab bo'lmadi (ovoz juda past yoki noaniq)."
+
+
+@dp.callback_query(F.data == "check_sub")
+async def handle_check_subscription(callback: CallbackQuery):
+    user = callback.from_user
+    db.add_or_update_user(user.id, user.username, user.first_name, user.last_name)
+    is_sub = await check_channel_subscription(user.id)
+
+    if is_sub:
+        await callback.answer("✅ Obuna tasdiqlandi!")
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(
+            f"Xush kelibsiz, {user.first_name}! 🎙️✨\n\n"
+            "Pastdagi bo'limlardan birini tanlang va ovozli xabar yuboring:\n"
+            "1. 🔁 **Teskari ovoz**\n"
+            "2. 📝 **Matnga aylantirish**",
+            reply_markup=get_main_keyboard(),
+            parse_mode="Markdown"
+        )
+    else:
+        await callback.answer("❌ Hali kanalga a'zo bo'lmadingiz. Iltimos, obuna bo'ling!", show_alert=True)
 
 
 @dp.message(CommandStart())
@@ -146,12 +195,26 @@ async def handle_start(message: Message):
     bot_info = await bot.get_me()
     username = bot_info.username or "bot"
 
+    # Admin bo'lsa obunani tekshirmasdan to'g'ridan-to'g'ri o'tkazish
+    if not is_admin_user(user.username, user.id):
+        is_sub = await check_channel_subscription(user.id)
+        if not is_sub:
+            await message.reply(
+                "👋 **Assalomu alaykum!**\n\n"
+                "Botdan to'liq foydalanish uchun rasmiy kanalimizga a'zo bo'ling:\n"
+                "👉 @NovaTechLab\n\n"
+                "Obuna bo'lgach, **«✅ A'zo bo'ldim»** tugmasini bosing:",
+                reply_markup=get_subscribe_keyboard(),
+                parse_mode="Markdown"
+            )
+            return
+
     if is_admin_user(user.username, user.id):
         text = (
             f"Assalomu alaykum, hurmatli Admin ({user.first_name})! 👑\n\n"
-            "Qanday amal bajaramiz? Quyidagi bo'limlardan birini tanlang, so'ng ovoz yuboring:\n\n"
-            "1. 🔁 **Teskari ovoz** — yuborilgan ovozni teskarisiga o'giradi\n"
-            "2. 📝 **Matnga aylantirish** — ovozni matn qilib beradi\n\n"
+            "Qanday amal bajaramiz? Quyidagi bo'limlardan birini tanlang:\n\n"
+            "1. 🔁 **Teskari ovoz**\n"
+            "2. 📝 **Matnga aylantirish**\n\n"
             f"@{username}"
         )
     else:
@@ -163,28 +226,48 @@ async def handle_start(message: Message):
             "Kerakli bo'limni bosing, so'ng ovozli xabar (voice) yuboring!\n\n"
             f"@{username}"
         )
-    await message.reply(text, reply_markup=get_main_keyboard())
+    await message.reply(text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
 
 
 @dp.message(F.text == "🔁 Teskari ovoz")
 async def set_reverse_mode(message: Message):
     user = message.from_user
+    if not is_admin_user(user.username, user.id):
+        is_sub = await check_channel_subscription(user.id)
+        if not is_sub:
+            await message.reply(
+                "⚠️ Botdan foydalanish uchun kanalimizga obuna bo'ling!",
+                reply_markup=get_subscribe_keyboard()
+            )
+            return
+
     db.set_user_mode(user.id, "reverse")
     await message.reply(
         "✅ **\"Teskari ovoz\"** rejimi tanlandi!\n\n"
         "Endi menga ovozli xabar (voice) yuboring. Men uni teskarisiga o'girib beraman.",
-        reply_markup=get_main_keyboard()
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
     )
 
 
 @dp.message(F.text == "📝 Matnga aylantirish")
 async def set_text_mode(message: Message):
     user = message.from_user
+    if not is_admin_user(user.username, user.id):
+        is_sub = await check_channel_subscription(user.id)
+        if not is_sub:
+            await message.reply(
+                "⚠️ Botdan foydalanish uchun kanalimizga obuna bo'ling!",
+                reply_markup=get_subscribe_keyboard()
+            )
+            return
+
     db.set_user_mode(user.id, "text")
     await message.reply(
         "✅ **\"Matnga aylantirish\"** rejimi tanlandi!\n\n"
         "Endi menga ovozli xabar (voice) yuboring. Men undagi gaplarni matn qilib yozib beraman.",
-        reply_markup=get_main_keyboard()
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
     )
 
 
@@ -239,7 +322,7 @@ async def handle_admin(message: Message):
     await message.reply(msg, reply_markup=get_main_keyboard())
 
 
-# Ovoz qabul qilish va tanlangan rejim bo'yicha darhol ishlash
+# Ovoz qabul qilish va tanlangan rejim bo'yicha ishlash
 @dp.message(F.voice)
 async def handle_voice(message: Message):
     voice = message.voice
@@ -249,13 +332,21 @@ async def handle_voice(message: Message):
     user = message.from_user
     db.add_or_update_user(user.id, user.username, user.first_name, user.last_name)
 
+    # Obuna tekshiruvi (faqat oddiy userlar uchun)
+    if not is_admin_user(user.username, user.id):
+        is_sub = await check_channel_subscription(user.id)
+        if not is_sub:
+            await message.reply(
+                "⚠️ Kechirasiz, botdan foydalanish uchun kanalimizga a'zo bo'lishingiz kerak!",
+                reply_markup=get_subscribe_keyboard()
+            )
+            return
+
     if voice.duration and voice.duration > MAX_VOICE_DURATION:
         await message.reply(f"⚠️ Ovoz juda uzun. Maksimal {MAX_VOICE_DURATION} soniya.")
         return
 
-    # Foydalanuvchining hozirgi tanlangan rejimini olamiz
     mode = db.get_user_mode(user.id)
-
     task_id = uuid.uuid4().hex
     input_file = TEMP_DIR / f"in_{task_id}.ogg"
 
@@ -270,19 +361,16 @@ async def handle_voice(message: Message):
         bot_tag = f"@{bot_info.username}" if bot_info.username else ""
 
         if mode == "text":
-            # 2. Voice to text (Ovozni matnga aylantirish)
             wav_file = TEMP_DIR / f"speech_{task_id}.wav"
             await convert_to_wav(input_file, wav_file)
             recognized_text = await asyncio.to_thread(recognize_speech_from_wav, wav_file)
             db.log_request(user.id, "voice_to_text")
 
-            # Matnni bir marta bosishda nusxalash (mono/code format)
-            # Telegramda `matn` bosilsa avtomatik buferga nusxalanadi
             clean_text = recognized_text.replace("`", "'")
             response_text = (
                 "📝 **Ovozdagi matn:**\n\n"
                 f"`{clean_text}`\n\n"
-                "👆 *Matnni ustiga bossangiz, avtomatik nusxalab olinadi!*"
+                "👆 *Matn ustiga bosing, avtomatik nusxalanadi!*"
             )
 
             await message.reply(
@@ -294,7 +382,6 @@ async def handle_voice(message: Message):
                 wav_file.unlink()
 
         else:
-            # 1. Reverse voice (Teskari ovoz)
             output_file = TEMP_DIR / f"rev_{task_id}.ogg"
             await process_reverse_voice(input_file, output_file)
             db.log_request(user.id, "voice_reverse")
@@ -368,7 +455,7 @@ async def on_shutdown(bot: Bot) -> None:
 async def handle_health_check(request: web.Request) -> web.Response:
     return web.json_response({
         "status": "ok",
-        "service": "Reverse & Voice-to-Text Bot",
+        "service": "Voice Bot with Channel Subscription",
         "mode": "webhook"
     })
 
