@@ -7,11 +7,9 @@ DB_PATH = Path(__file__).parent / "bot_database.db"
 
 
 def init_db():
-    """Baza va jadvallarni yaratish."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    # Foydalanuvchilar jadvali (tanlangan rejim bilan)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -19,18 +17,21 @@ def init_db():
             first_name TEXT,
             last_name TEXT,
             mode TEXT DEFAULT 'reverse',
+            chat_step TEXT DEFAULT 'none',
+            user_age TEXT,
+            user_custom_name TEXT,
             joined_at TEXT,
             last_active TEXT
         )
     """)
 
-    # Agar 'mode' ustuni avvalgi versiyada bo'lmasa, qo'shib qo'yish
-    try:
-        cursor.execute("ALTER TABLE users ADD COLUMN mode TEXT DEFAULT 'reverse'")
-    except sqlite3.OperationalError:
-        pass
+    # Yangi ustunlar mavjud bo'lmasa qo'shish
+    for col in [("chat_step", "TEXT DEFAULT 'none'"), ("user_age", "TEXT"), ("user_custom_name", "TEXT")]:
+        try:
+            cursor.execute(f"ALTER TABLE users ADD COLUMN {col[0]} {col[1]}")
+        except sqlite3.OperationalError:
+            pass
 
-    # So'rovlar statistikasi
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,7 +46,6 @@ def init_db():
 
 
 def add_or_update_user(user_id: int, username: Optional[str], first_name: Optional[str], last_name: Optional[str]):
-    """Foydalanuvchi ma'lumotlarini saqlash yoki yangilash."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -70,16 +70,14 @@ def add_or_update_user(user_id: int, username: Optional[str], first_name: Option
 
 
 def set_user_mode(user_id: int, mode: str):
-    """Foydalanuvchi tanlagan rejimni saqlash ('reverse' yoki 'text')."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET mode = ? WHERE user_id = ?", (mode, user_id))
+    cursor.execute("UPDATE users SET mode = ?, chat_step = 'none' WHERE user_id = ?", (mode, user_id))
     conn.commit()
     conn.close()
 
 
 def get_user_mode(user_id: int) -> str:
-    """Foydalanuvchining hozirgi rejimini olish."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT mode FROM users WHERE user_id = ?", (user_id,))
@@ -90,23 +88,45 @@ def get_user_mode(user_id: int) -> str:
     return "reverse"
 
 
+def set_chat_state(user_id: int, step: str, custom_name: Optional[str] = None, age: Optional[str] = None):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    if custom_name and age:
+        cursor.execute("UPDATE users SET chat_step = ?, user_custom_name = ?, user_age = ? WHERE user_id = ?", (step, custom_name, age, user_id))
+    elif custom_name:
+        cursor.execute("UPDATE users SET chat_step = ?, user_custom_name = ? WHERE user_id = ?", (step, custom_name, user_id))
+    elif age:
+        cursor.execute("UPDATE users SET chat_step = ?, user_age = ? WHERE user_id = ?", (step, age, user_id))
+    else:
+        cursor.execute("UPDATE users SET chat_step = ? WHERE user_id = ?", (step, user_id))
+    conn.commit()
+    conn.close()
+
+
+def get_chat_state(user_id: int) -> Dict[str, Any]:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT chat_step, user_custom_name, user_age FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {"step": row[0] or "none", "name": row[1] or "", "age": row[2] or ""}
+    return {"step": "none", "name": "", "age": ""}
+
+
 def log_request(user_id: int, request_type: str = "voice_reverse"):
-    """Bajarilgan so'rovni qayd qilish."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
     cursor.execute("""
         INSERT INTO requests (user_id, request_type, created_at)
         VALUES (?, ?, ?)
     """, (user_id, request_type, now_str))
-
     conn.commit()
     conn.close()
 
 
 def get_stats() -> Dict[str, Any]:
-    """Admin uchun to'liq statistika."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -133,10 +153,8 @@ def get_stats() -> Dict[str, Any]:
 
 
 def get_recent_users(limit: int = 20) -> List[Dict[str, Any]]:
-    """Oxirgi kirgan yoki faol foydalanuvchilar ro'yxati."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-
     cursor.execute("""
         SELECT user_id, username, first_name, last_name, joined_at, last_active 
         FROM users 
