@@ -84,14 +84,14 @@ async def set_bot_commands(bot: Bot):
 
 
 async def process_reverse_voice(input_path: Path, output_path: Path) -> None:
-    """Ovozni tozalash va teskarisiga o'girish."""
+    """Ovoz parametrlarini o'zgartirmasdan faqat toza teskarisiga o'girish."""
     async with processing_semaphore:
-        audio_filter = "afftdn=nr=10:nf=-25,areverse"
+        # Shovqinni tozalash olib tashlandi, sof teskari ovoz
         cmd = [
             "ffmpeg",
             "-y",
             "-i", str(input_path),
-            "-af", audio_filter,
+            "-af", "areverse",
             "-c:a", "libopus",
             "-b:a", "64k",
             str(output_path)
@@ -276,8 +276,18 @@ async def handle_voice(message: Message):
             recognized_text = await asyncio.to_thread(recognize_speech_from_wav, wav_file)
             db.log_request(user.id, "voice_to_text")
 
+            # Matnni bir marta bosishda nusxalash (mono/code format)
+            # Telegramda `matn` bosilsa avtomatik buferga nusxalanadi
+            clean_text = recognized_text.replace("`", "'")
+            response_text = (
+                "📝 **Ovozdagi matn:**\n\n"
+                f"`{clean_text}`\n\n"
+                "👆 *Matnni ustiga bossangiz, avtomatik nusxalab olinadi!*"
+            )
+
             await message.reply(
-                f"📝 **Ovozdagi matn:**\n\n\"{recognized_text}\"\n\n{bot_tag}",
+                response_text,
+                parse_mode="Markdown",
                 reply_markup=get_main_keyboard()
             )
             if wav_file.exists():
