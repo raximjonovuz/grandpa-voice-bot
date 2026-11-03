@@ -127,53 +127,60 @@ async def handle_start(message: Message):
 
 @dp.message(Command("help"))
 async def handle_help(message: Message):
-    user = message.from_user
-    db.add_or_update_user(user.id, user.username, user.first_name, user.last_name)
-    bot_info = await bot.get_me()
-    username = bot_info.username or "bot"
-    text = (
-        "💡 **Botdan foydalanish:**\n\n"
-        "1. Mikrofonni bosib ovozli xabar (voice) yuboring.\n"
-        "2. Bot ovozdagi keraksiz shovqinlarni tozalaydi va uni teskarisiga o'giradi.\n"
-        "3. Tayyor audio sizga darhol qaytariladi.\n\n"
-        f"@{username}"
-    )
-    await message.reply(text, parse_mode="Markdown")
+    try:
+        user = message.from_user
+        db.add_or_update_user(user.id, user.username, user.first_name, user.last_name)
+        bot_info = await bot.get_me()
+        username = bot_info.username or "bot"
+        text = (
+            "💡 Botdan foydalanish:\n\n"
+            "1. Mikrofonni bosib ovozli xabar (voice) yuboring.\n"
+            "2. Bot ovozdagi shovqinlarni tozalaydi va teskarisiga o'giradi.\n"
+            "3. Tayyor audio sizga darhol qaytariladi.\n\n"
+            f"@{username}"
+        )
+        await message.reply(text)
+    except Exception as e:
+        logger.exception(f"/help xatolik: {e}")
+        await message.reply("Yordam: Menga ovozli xabar yuboring, uni teskarisiga o'girib beraman.")
 
 
 @dp.message(Command("admin"))
 async def handle_admin(message: Message):
-    user = message.from_user
-    db.add_or_update_user(user.id, user.username, user.first_name, user.last_name)
+    try:
+        user = message.from_user
+        db.add_or_update_user(user.id, user.username, user.first_name, user.last_name)
 
-    logger.info(f"Admin tekshiruvi: id={user.id}, username={user.username}, is_admin={is_admin(message)}")
+        logger.info(f"Admin tekshiruvi: id={user.id}, username={user.username}, is_admin={is_admin(message)}")
 
-    if not is_admin(message):
-        uname = f"@{user.username}" if user.username else "username yo'q"
-        await message.reply(
-            f"Kechirasiz, ushbu buyruq faqat bot admini uchun!\n"
-            f"Sizning profilingiz: {uname} (ID: `{user.id}`)",
-            parse_mode="Markdown"
+        if not is_admin(message):
+            uname = f"@{user.username}" if user.username else "username yo'q"
+            await message.reply(
+                f"Kechirasiz, ushbu buyruq faqat bot admini uchun!\n"
+                f"Sizning profilingiz: {uname} (ID: {user.id})"
+            )
+            return
+
+        stats = db.get_stats()
+        recent = db.get_recent_users(10)
+
+        users_text = ""
+        for idx, u in enumerate(recent, 1):
+            uname = f"@{u['username']}" if u['username'] else "No username"
+            users_text += f"{idx}. {u['first_name']} ({uname}) — {u['last_active']}\n"
+
+        msg = (
+            "👑 Admin boshqaruv paneli\n\n"
+            f"👥 Jami foydalanuvchilar: {stats['total_users']} ta\n"
+            f"⚡ Jami so'rovlar soni: {stats['total_requests']} ta\n"
+            f"📅 Bugungi so'rovlar: {stats['today_requests']} ta\n"
+            f"🔥 Bugungi faol odamlar: {stats['today_active_users']} ta\n\n"
+            f"📋 Oxirgi kirgan foydalanuvchilar:\n{users_text}"
         )
-        return
-
-    stats = db.get_stats()
-    recent = db.get_recent_users(10)
-
-    users_text = ""
-    for idx, u in enumerate(recent, 1):
-        uname = f"@{u['username']}" if u['username'] else "No username"
-        users_text += f"{idx}. {u['first_name']} ({uname}) — {u['last_active']}\n"
-
-    msg = (
-        f"👑 **Admin boshqaruv paneli**\n\n"
-        f"👥 **Jami foydalanuvchilar:** {stats['total_users']} ta\n"
-        f"⚡ **Jami so'rovlar soni:** {stats['total_requests']} ta\n"
-        f"📅 **Bugungi so'rovlar:** {stats['today_requests']} ta\n"
-        f"🔥 **Bugungi faol odamlar:** {stats['today_active_users']} ta\n\n"
-        f"📋 **Oxirgi kirgan foydalanuvchilar:**\n{users_text}"
-    )
-    await message.reply(msg, parse_mode="Markdown")
+        await message.reply(msg)
+    except Exception as e:
+        logger.exception(f"/admin xatolik: {e}")
+        await message.reply(f"Admin xatoligi: {e}")
 
 
 # Matn orqali admin savollariga javob berish (masalan: "nechta odam kirdi?", "kimlar kirdi?")
