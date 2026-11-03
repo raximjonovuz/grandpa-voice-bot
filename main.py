@@ -1,13 +1,13 @@
 import asyncio
 import logging
 import os
-import shutil
 import uuid
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, FSInputFile
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 from dotenv import load_dotenv
 
@@ -16,57 +16,51 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - [%(levelname)s] - %(name)s - %(message)s"
 )
-logger = logging.getLogger("GrandpaVoiceBot")
+logger = logging.getLogger("ReverseVoiceBot")
 
-# .env yuklash va tokenni tozalab olish
 load_dotenv()
 raw_token = os.getenv("BOT_TOKEN") or os.getenv("bottoken")
 if not raw_token:
     raise ValueError("BOT_TOKEN topilmadi! Iltimos .env faylida BOT_TOKEN ni ko'rsating.")
 
-# Sharhlar (// yoki #) va qo'shtirnoqlardan tozalash
 BOT_TOKEN = raw_token.split("//")[0].split("#")[0].strip().strip('"').strip("'")
 
-# Papkalar va cheklovlar
+# Webhook sozlamalari
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://grandpa-voice-bot.onrender.com").rstrip("/")
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+
 BASE_DIR = Path(__file__).parent
 TEMP_DIR = BASE_DIR / "temp"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
-MAX_VOICE_DURATION = 60  # soniya (1 daqiqa)
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_VOICE_DURATION = 120  # soniya (2 daqiqa)
+MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 
-# Server resursini tejash uchun bir vaqtning o'zida maksimal 3 ta ffmpeg jarayoni
-CONCURRENCY_LIMIT = 3
+CONCURRENCY_LIMIT = 5
 processing_semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
-from grandpa_voice import build_filter
-
-# ovoz.mp4 ga to'liq kalibrlangan "Grandpa" filtri
-GRANDPA_AUDIO_FILTER = build_filter()
-
-# Aiogram bot va dispatcher
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
-async def process_grandpa_voice(input_path: Path, output_path: Path) -> None:
+async def process_reverse_voice(input_path: Path, output_path: Path) -> None:
     """
-    FFmpeg yordamida audio faylni nozik Instagram 'Grandpa' ovoz effektiga o'tkazish.
-    Asinxron subprocess orqali asosiy event loop bloklanmaydi.
+    Ovozni teskarisiga (areverse) o'girish.
+    Boshqa hech qanday parametr o'zgartirilmaydi.
     """
     async with processing_semaphore:
         cmd = [
             "ffmpeg",
             "-y",
             "-i", str(input_path),
-            "-af", GRANDPA_AUDIO_FILTER,
+            "-af", "areverse",
             "-c:a", "libopus",
-            "-b:a", "32k",
-            "-vbr", "on",
+            "-b:a", "64k",
             str(output_path)
         ]
 
-        logger.info(f"FFmpeg ishga tushirilmoqda: {input_path.name} -> {output_path.name}")
+        logger.info(f"FFmpeg areverse: {input_path.name} -> {output_path.name}")
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -82,26 +76,21 @@ async def process_grandpa_voice(input_path: Path, output_path: Path) -> None:
 
 @dp.message(CommandStart())
 async def handle_start(message: Message):
+    bot_info = await bot.get_me()
+    username = bot_info.username or "bot"
     text = (
-        "Assalomu alaykum! 👴🎤\n\n"
-        "Men **Instagram Grandpa (Boboy)** ovoz effekti botiman!\n\n"
-        "Menga ixtiyoriy **ovozli xabar (voice)** yuboring, men uni darhol "
-        "titroq, xirildoq va qari boboy ovoziga o'tkazib qaytarib beraman.\n\n"
-        "⚙️ *Cheklovlar:* Ovoz uzunligi maksimum 60 soniya."
+        "Assalomu alaykum! 🔁🎤\n\n"
+        "Menga ovozli xabar (voice) yuboring, men uni teskarisiga o'girib beraman.\n\n"
+        f"@{username}"
     )
-    await message.reply(text, parse_mode="Markdown")
+    await message.reply(text)
 
 
 @dp.message(Command("help"))
 async def handle_help(message: Message):
-    text = (
-        "💡 **Botdan foydalanish bo'yicha qo'llanma:**\n\n"
-        "1. Mikrofon tugmasini bosib Telegram ovozli xabari (voice) yozib yuboring.\n"
-        "2. Bot bir necha soniyada Instagramdagi mashhur 'Grandpa' effektini qo'llaydi.\n"
-        "3. Tayyor ovoz sizga qaytarib yuboriladi.\n\n"
-        "Xatolik yoki takliflar bo'lsa, adminga murojaat qiling."
-    )
-    await message.reply(text, parse_mode="Markdown")
+    bot_info = await bot.get_me()
+    username = bot_info.username or "bot"
+    await message.reply(f"Menga ovozli xabar yuboring, uni teskarisiga o'girib beraman.\n\n@{username}")
 
 
 @dp.message(F.voice)
@@ -110,147 +99,103 @@ async def handle_voice(message: Message):
     if not voice:
         return
 
-    # Uzunlik tekshiruvi
     if voice.duration and voice.duration > MAX_VOICE_DURATION:
-        await message.reply(
-            f"⚠️ Ovozli xabar juda uzun ({voice.duration}s). "
-            f"Iltimos, maksimum {MAX_VOICE_DURATION} soniyagacha bo'lgan ovoz yuboring."
-        )
+        await message.reply(f"⚠️ Ovoz juda uzun. Maksimal {MAX_VOICE_DURATION} soniya.")
         return
 
-    # Hajm tekshiruvi
     if voice.file_size and voice.file_size > MAX_FILE_SIZE:
-        await message.reply(
-            f"⚠️ Ovozli xabar hajmi juda katta ({voice.file_size // (1024 * 1024)} MB). "
-            f"Iltimos, 10 MB dan kichik ovoz yuboring."
-        )
+        await message.reply("⚠️ Ovoz hajmi juda katta.")
         return
-
-    # Vaqtinchalik holat xabari
-    status_msg = await message.reply("👴 Ovoz boboy tiliga o'tkazilmoqda, biroz kuting...")
 
     task_id = uuid.uuid4().hex
     input_file = TEMP_DIR / f"in_{task_id}.ogg"
     output_file = TEMP_DIR / f"out_{task_id}.ogg"
 
     try:
-        # Ovoz faylini yuklab olish
         file_info = await bot.get_file(voice.file_id)
         if not file_info.file_path:
             raise ValueError("Fayl yo'lini olib bo'lmadi.")
 
         await bot.download_file(file_info.file_path, destination=input_file)
+        await process_reverse_voice(input_file, output_file)
 
-        # FFmpeg bilan o'zgartirish
-        await process_grandpa_voice(input_file, output_file)
+        bot_info = await bot.get_me()
+        bot_tag = f"@{bot_info.username}" if bot_info.username else ""
 
-        # Telegram ovozli xabar sifatida foydalanuvchiga qaytarish
         processed_voice = FSInputFile(str(output_file))
         await message.reply_voice(
             voice=processed_voice,
-            caption="👴 Mana, boboy ovozida tayyor bo'ldi!"
+            caption=bot_tag
         )
 
     except Exception as e:
         logger.exception(f"Ovozni qayta ishlashda xatolik: {e}")
-        await message.reply(
-            "❌ Kechirasiz, ovozni qayta ishlashda kutilmagan xatolik yuz berdi. "
-            "Iltimos, qaytadan urinib ko'ring."
-        )
+        await message.reply("❌ Xatolik yuz berdi. Qaytadan urinib ko'ring.")
 
     finally:
-        # Vaqtinchalik fayllarni o'chirish (disk to'lib ketmasligi uchun)
-        if input_file.exists():
-            try:
-                input_file.unlink()
-            except OSError:
-                pass
-
-        if output_file.exists():
-            try:
-                output_file.unlink()
-            except OSError:
-                pass
-
-        # Vaqtinchalik status xabarini o'chirish
-        try:
-            await status_msg.delete()
-        except Exception:
-            pass
+        for f in (input_file, output_file):
+            if f.exists():
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
 
 
 @dp.message()
 async def handle_other_messages(message: Message):
-    """Ovozli xabardan boshqa har qanday xabar uchun eslatma."""
-    await message.reply(
-        "🎤 Iltimos, menga **ovozli xabar (voice note)** yuboring! "
-        "Men uni Instagram 'Grandpa' effektiga aylantirib beraman.",
-        parse_mode="Markdown"
+    bot_info = await bot.get_me()
+    bot_tag = f"@{bot_info.username}" if bot_info.username else ""
+    await message.reply(f"Iltimos, ovozli xabar (voice) yuboring!\n\n{bot_tag}")
+
+
+async def on_startup(bot: Bot) -> None:
+    logger.info(f"Webhook sozlanmoqda: {WEBHOOK_URL}")
+    await bot.set_webhook(
+        url=WEBHOOK_URL,
+        drop_pending_updates=True,
+        allowed_updates=dp.resolve_used_update_types()
     )
+    bot_user = await bot.get_me()
+    logger.info(f"✅ Webhook o'rnatildi! Bot: @{bot_user.username}")
 
 
-# --- Render / Cloud Web Service Health Check Server ---
+async def on_shutdown(bot: Bot) -> None:
+    logger.info("Bot to'xtatilmoqda...")
+    await bot.session.close()
+
+
 async def handle_health_check(request: web.Request) -> web.Response:
     return web.json_response({
         "status": "ok",
-        "service": "Grandpa Voice Bot",
-        "aiogram": "running"
+        "service": "Reverse Voice Bot",
+        "mode": "webhook"
     })
 
 
-async def start_health_check_server(port: int) -> web.AppRunner:
+def main():
+    # Render'da yoki lokalda port
+    port = int(os.getenv("PORT", "8080"))
+
+    # Webhook serverini yaratish
     app = web.Application()
     app.router.add_get("/", handle_health_check)
     app.router.add_get("/health", handle_health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    logger.info(f"Health-check veb-serveri 0.0.0.0:{port} portida ishga tushdi.")
-    return runner
 
+    # Startup & Shutdown hodisalari
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
 
-async def cleanup_temp_dir():
-    """Start va shutdown vaqtida qolib ketgan eski fayllarni tozalash."""
-    if TEMP_DIR.exists():
-        for item in TEMP_DIR.glob("*.ogg"):
-            try:
-                item.unlink()
-            except OSError:
-                pass
+    # Aiogram webhook handler'ini aiohttp'ga ulash
+    webhook_requests_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot
+    )
+    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
 
-
-async def main():
-    logger.info("Bot ishga tushmoqda...")
-    await cleanup_temp_dir()
-
-    # Faqat Render/Cloud serverda health-check veb-serverini ishga tushiramiz
-    runner = None
-    if os.getenv("RENDER"):
-        port = int(os.getenv("PORT", "8080"))
-        try:
-            runner = await start_health_check_server(port)
-        except Exception as e:
-            logger.warning(f"Health-check veb-serveri xatosi: {e}")
-
-    try:
-        # Eski kutilayotgan yangilanishlarni tozalash va pollingni boshlash
-        await bot.delete_webhook(drop_pending_updates=True)
-        bot_user = await bot.get_me()
-        logger.info(f"✅ Bot tayyor va ishga tushdi: @{bot_user.username}")
-        logger.info("Endi Telegramda botga ovozli xabar yuborishingiz mumkin.")
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-    finally:
-        logger.info("Bot to'xtatilmoqda...")
-        if runner:
-            await runner.cleanup()
-        await bot.session.close()
-        await cleanup_temp_dir()
-        logger.info("Bot muvaffaqiyatli to'xtatildi.")
+    logger.info(f"Server 0.0.0.0:{port} portida Webhook rejimida ishga tushmoqda...")
+    web.run_app(app, host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Dastur foydalanuvchi tomonidan to'xtatildi.")
+    main()
