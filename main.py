@@ -2,7 +2,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
+from collections import deque
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -35,7 +37,9 @@ if not raw_token:
     raise ValueError("BOT_TOKEN topilmadi! Iltimos .env faylida BOT_TOKEN ni ko'rsating.")
 
 BOT_TOKEN = raw_token.split("//")[0].split("#")[0].strip().strip('"').strip("'")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()            # ovoz ishlari (Whisper) uchun
+GROQ_CHAT_KEY = os.getenv("GROQ_CHAT_KEY", "").strip() or GROQ_API_KEY  # hazilkash AI uchun (alohida key)
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.3-70b-versatile").strip()
 
 ADMIN_USERNAMES = ["o_raximjonov", "o_raximjonovuz"]
 
@@ -163,45 +167,102 @@ def transcribe_with_groq_whisper(audio_file_path: Path) -> str:
         return "Ovozdagi nutqni aniqlashda xatolik bo'ldi."
 
 
-def generate_roast_chat(user_name: str, user_age: str, user_message: str) -> str:
-    """Qwen3.8-27b yordamida yengil hazil va kulgili javob berish."""
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    
-    system_prompt = (
-        "Sen Telegram botdagi do'stona, o'tkir tilli va hazilkash o'zbekcha AI do'stsan. "
-        f"Foydalanuvchining ismi: {user_name}, yoshi: {user_age}. "
-        "Foydalanuvchining gapi, yoshi yoki ismi ustidan o'zbekcha samimiy, yengil, xafagarchiliksiz va kulgili qilib hazil qil (roast). "
-        "Javobing 2 ta qisqa jumladan oshmasin, kulgili va ixcham bo'lsin. Kulgili emojilar ishlat."
+# --- Hazilkash AI ---
+HISTORY_LIMIT = 6          # faqat oxirgi 6 ta xabar eslab qolinadi (token tejash)
+chat_history: dict[int, deque] = {}
+cleanup_ids: dict[int, list] = {}   # o'chirib tashlanadigan xabarlar
+
+
+def build_system_prompt(name: str, age: str, tg_username: str) -> str:
+    return (
+        "Sen Telegramdagi o'zbek yigit/qizlarning 'ko'cha bola' do'sti, hazilkash va o'tkir tilli suhbatdoshsan. "
+        "Sen AI ekaningni o'zing aytib yurma, oddiy do'stdek gaplash.\n"
+        f"Suhbatdosh: ism={name}, yosh={age}, username={tg_username or 'yoq'}.\n"
+        "QOIDALAR:\n"
+        "1. Ismidan jinsini o'zing aniqla (Madina, Dilnoza = qiz; Ozodbek, Jasur = yigit). "
+        "Yigitga 'uka/aka/birodar/jo'ra', qizga 'opa/singil' deb murojaat qil. Noaniq bo'lsa jinsni aytmay qo'ya qol.\n"
+        "2. Yoshiga qarab ohangni sozla: 13-17 yosh — o'smirlarcha, o'yinqaroq; 18-25 — ko'cha uslubida, "
+        "zamonaviy sleng ('qalesan', 'zo'r-ku', 'jo'ra', 'bomba'); 26+ — hurmat aralash hazil.\n"
+        "3. Faqat o'zbek tilida (lotin), xuddi ko'chada gaplashgandek tabiiy. Foydalanuvchi rus/ingliz yozsa, shu tilda javob ber.\n"
+        "4. Javob 1-2 ta QISQA jumla, 1-2 ta emoji. Hech qachon ro'yxat, sarlavha yoki uzun matn yozma.\n"
+        "5. Foydalanuvchining oxirgi gapiga MOS javob ber: avval savoliga javob ber, keyin yengil hazil qil. "
+        "Uning gapini takrorlama. Har safar 'salom' deb boshlama. Oldingi javoblaringni takrorlama.\n"
+        "6. Hazil yengil va do'stona bo'lsin. Din, oila, millat, tashqi ko'rinish, kasallik, marhumlar ustidan KULMA. "
+        "Haqorat va qo'pol so'kinish yo'q.\n"
+        "7. Foydalanuvchi xafa bo'lsa yoki jiddiy gap aytsa — hazilni to'xtatib, samimiy yordam ber."
     )
 
-    payload = {
-        "model": "qwen/qwen3.8-27b",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message}
-        ],
-        "max_tokens": 120,
-        "temperature": 0.85
-    }
 
+def groq_chat(messages: list) -> str:
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": messages,
+        "max_tokens": 110,
+        "temperature": 0.8,
+        "frequency_penalty": 0.6,
+    }
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Authorization": f"Bearer {GROQ_CHAT_KEY}",
             "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0"
+            "User-Agent": "Mozilla/5.0",
         },
-        method="POST"
+        method="POST",
     )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = json.loads(resp.read().decode())
+        text = data["choices"][0]["message"]["content"] or ""
+        # Qwen kabi modellar <think>...</think> chiqarsa, olib tashlaymiz
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
+        return text
 
+
+def generate_roast_chat(user_id: int, name: str, age: str, tg_username: str, user_message: str) -> str:
+    history = chat_history.setdefault(user_id, deque(maxlen=HISTORY_LIMIT))
+    messages = [{"role": "system", "content": build_system_prompt(name, age, tg_username)}]
+    messages += list(history)
+    messages.append({"role": "user", "content": user_message})
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode())
-            return data["choices"][0]["message"]["content"].strip()
+        reply = groq_chat(messages)
+        if not reply:
+            raise ValueError("bo'sh javob")
+        history.append({"role": "user", "content": user_message})
+        history.append({"role": "assistant", "content": reply})
+        return reply
     except Exception as e:
         logger.error(f"Groq Chat xatosi: {e}")
-        return f"Hey {user_name}, hazil qilmoqchi edim-u, aqlim yetmay qoldi 😂"
+        return "Ey, miyam bir sekin ishladi 😅 Yana bir marta yozchi!"
+
+
+def get_chat_keyboard() -> ReplyKeyboardMarkup:
+    """AI chat paytida faqat bitta tugma — chat toza turadi."""
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="⬅️ Menyu")]],
+        resize_keyboard=True,
+        input_field_placeholder="Yozing...",
+    )
+
+
+async def safe_delete(chat_id: int, ids: list):
+    for mid in ids:
+        try:
+            await bot.delete_message(chat_id, mid)
+        except Exception:
+            pass
+
+
+def parse_name_age(text: str):
+    """'Ozodbek 19' yoki '19 Ozodbek' ko'rinishidan ism va yoshni ajratadi."""
+    m = re.search(r"\d{1,2}", text)
+    if not m:
+        return None, None
+    age = m.group(0)
+    name = re.sub(r"\d+", "", text).strip(" ,.-:;")
+    name = " ".join(name.split()[:2])
+    return (name or None), age
 
 
 # --- Telegram Bot Handlerlari ---
@@ -229,6 +290,8 @@ async def handle_start(message: Message):
 async def set_reverse_mode(message: Message):
     user = message.from_user
     db.set_user_mode(user.id, "reverse")
+    db.set_chat_state(user.id, "idle")
+    chat_history.pop(user.id, None)
     bot_info = await bot.get_me()
     bot_tag = f"@{bot_info.username}" if bot_info.username else ""
     await message.reply(
@@ -241,6 +304,8 @@ async def set_reverse_mode(message: Message):
 async def set_denoise_mode(message: Message):
     user = message.from_user
     db.set_user_mode(user.id, "denoise")
+    db.set_chat_state(user.id, "idle")
+    chat_history.pop(user.id, None)
     bot_info = await bot.get_me()
     bot_tag = f"@{bot_info.username}" if bot_info.username else ""
     await message.reply(
@@ -253,6 +318,8 @@ async def set_denoise_mode(message: Message):
 async def set_text_mode(message: Message):
     user = message.from_user
     db.set_user_mode(user.id, "text")
+    db.set_chat_state(user.id, "idle")
+    chat_history.pop(user.id, None)
     bot_info = await bot.get_me()
     bot_tag = f"@{bot_info.username}" if bot_info.username else ""
     await message.reply(
@@ -265,13 +332,21 @@ async def set_text_mode(message: Message):
 async def start_roast_chat(message: Message):
     user = message.from_user
     db.set_user_mode(user.id, "roast")
-    db.set_chat_state(user.id, "ask_name")
-    bot_info = await bot.get_me()
-    bot_tag = f"@{bot_info.username}" if bot_info.username else ""
-    await message.reply(
-        f"🎭 Hazilkash AI suhbatiga xush kelibsiz!\n\nKeling, oldin tanishib olaylik. Ismingiz nima?\n\n{bot_tag}",
-        reply_markup=get_main_keyboard()
+    db.set_chat_state(user.id, "ask_info")
+    chat_history.pop(user.id, None)
+    q = await message.answer(
+        "Qalesan! 😎 Tanishamiz — isming va yoshing? (masalan: Ozodbek 19)",
+        reply_markup=get_chat_keyboard()
     )
+    cleanup_ids[user.id] = [message.message_id, q.message_id]
+
+
+@dp.message(F.text == "⬅️ Menyu")
+async def back_to_menu(message: Message):
+    user = message.from_user
+    db.set_chat_state(user.id, "idle")
+    chat_history.pop(user.id, None)
+    await message.answer("Asosiy menyu 👇", reply_markup=get_main_keyboard())
 
 
 @dp.message(Command("help"))
@@ -419,32 +494,36 @@ async def handle_text(message: Message):
     state = db.get_chat_state(user.id)
     step = state["step"]
 
-    # Hazilkash AI intervyusi
-    if step == "ask_name":
-        custom_name = message.text.strip()
-        db.set_chat_state(user.id, "ask_age", custom_name=custom_name)
-        await message.reply(f"Xursandman, {custom_name}! 😉\nEndi yoshingizni ayting, nechiga kirdingiz?", reply_markup=get_main_keyboard())
-        return
-
-    elif step == "ask_age":
-        age = message.text.strip()
-        custom_name = state["name"] or user.first_name
-        db.set_chat_state(user.id, "chatting", age=age)
-        first_roast = await asyncio.to_thread(generate_roast_chat, custom_name, age, f"Salom, men {custom_name}man, yoshim {age}da. Meni bir hazil qilib kutib olchi!")
-        await message.reply(
-            f"Zo'r! Demak {custom_name}, {age} yosh.\n\n"
-            f"{first_roast}\n\n"
-            f"Endi istalgan narsangizni yozing, hazil bilan javob qaytaraman! 😆\n\n{bot_tag}",
-            reply_markup=get_main_keyboard()
+    # Hazilkash AI
+    if step == "ask_info":
+        name, age = parse_name_age(message.text)
+        ids = cleanup_ids.pop(user.id, [])
+        ids.append(message.message_id)
+        if not age:
+            q = await message.answer("Ism va yoshni birga yoz: masalan «Ozodbek 19» 🙂")
+            cleanup_ids[user.id] = ids + [q.message_id]
+            return
+        name = name or user.first_name
+        db.set_chat_state(user.id, "chatting", custom_name=name, age=age)
+        # tanishuv savol-javoblarini chatdan o'chiramiz
+        await safe_delete(message.chat.id, ids)
+        await bot.send_chat_action(message.chat.id, "typing")
+        greet = await asyncio.to_thread(
+            generate_roast_chat, user.id, name, age, user.username or "",
+            f"Salom, men {name}man, {age} yoshdaman. Tanishuv uchun bir hazil qilib kutib ol."
         )
+        await message.answer(greet, reply_markup=get_chat_keyboard())
         return
 
     elif step == "chatting":
-        custom_name = state["name"] or user.first_name
+        name = state["name"] or user.first_name
         age = state["age"] or "noma'lum"
-        roast_reply = await asyncio.to_thread(generate_roast_chat, custom_name, age, message.text)
+        await bot.send_chat_action(message.chat.id, "typing")
+        reply = await asyncio.to_thread(
+            generate_roast_chat, user.id, name, age, user.username or "", message.text
+        )
         db.log_request(user.id, "roast_chat")
-        await message.reply(f"{roast_reply}\n\n{bot_tag}", reply_markup=get_main_keyboard())
+        await message.answer(reply, reply_markup=get_chat_keyboard())
         return
 
     # Admin savollari
