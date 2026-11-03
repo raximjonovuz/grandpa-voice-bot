@@ -250,13 +250,12 @@ async def handle_check_subscription(callback: CallbackQuery):
         await callback.message.answer(
             f"Xush kelibsiz, {user.first_name}! 🎙️✨\n\n"
             "Pastdagi bo'limlardan birini tanlang:\n"
-            "1. 🔁 **Teskari ovoz**\n"
-            "2. 🧹 **Shovqindan tozalash** (AI Denoise)\n"
-            "3. 📝 **Matnga aylantirish** (15s)\n"
-            "4. 🎭 **Hazilkash AI**\n\n"
+            "1. 🔁 Teskari ovoz\n"
+            "2. 🧹 Shovqindan tozalash\n"
+            "3. 📝 Matnga aylantirish (15s)\n"
+            "4. 🎭 Hazilkash AI\n\n"
             "📢 Homiy: @NovaTechLab",
-            reply_markup=get_main_keyboard(),
-            parse_mode="Markdown"
+            reply_markup=get_main_keyboard()
         )
     else:
         await callback.answer("❌ Hali kanalga a'zo bo'lmadingiz. Iltimos, obuna bo'ling!", show_alert=True)
@@ -273,26 +272,25 @@ async def handle_start(message: Message):
     is_sub = await check_channel_subscription(user.id)
     if not is_sub:
         await message.reply(
-            "👋 **Assalomu alaykum!**\n\n"
+            "👋 Assalomu alaykum!\n\n"
             "Botdan to'liq foydalanish uchun rasmiy kanalimizga a'zo bo'ling:\n"
             "👉 @NovaTechLab\n\n"
-            "Obuna bo'lgach, **«✅ A'zo bo'ldim»** tugmasini bosing:",
-            reply_markup=get_subscribe_keyboard(),
-            parse_mode="Markdown"
+            "Obuna bo'lgach, «✅ A'zo bo'ldim» tugmasini bosing:",
+            reply_markup=get_subscribe_keyboard()
         )
         return
 
     text = (
         f"Assalomu alaykum, {user.first_name}! 🎙️✨\n\n"
         "Quyidagi bo'limlardan birini tanlang:\n\n"
-        "1. 🔁 **Teskari ovoz** — ovozni teskarisiga o'giradi\n"
-        "2. 🧹 **Shovqindan tozalash** — ovozdagi shovqinlarni tozalaydi\n"
-        "3. 📝 **Matnga aylantirish** — 15s ovozni matn qilib beradi\n"
-        "4. 🎭 **Hazilkash AI** — siz bilan hazillashadigan AI chat\n\n"
+        "1. 🔁 Teskari ovoz — ovozni teskarisiga o'giradi\n"
+        "2. 🧹 Shovqindan tozalash — ovozdagi shovqinlarni tozalaydi\n"
+        "3. 📝 Matnga aylantirish — 15s ovozni matn qilib beradi\n"
+        "4. 🎭 Hazilkash AI — siz bilan hazillashadigan AI chat\n\n"
         "📢 Homiy kanal: @NovaTechLab\n"
         f"@{username}"
     )
-    await message.reply(text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    await message.reply(text, reply_markup=get_main_keyboard())
 
 
 @dp.message(F.text == "🔁 Teskari ovoz")
@@ -302,7 +300,7 @@ async def set_reverse_mode(message: Message):
         await message.reply("⚠️ Kanalimizga a'zo bo'ling!", reply_markup=get_subscribe_keyboard())
         return
     db.set_user_mode(user.id, "reverse")
-    await message.reply("✅ **«Teskari ovoz»** rejimi tanlandi! Menga ovozli xabar (voice) yuboring.", reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    await message.reply("✅ «Teskari ovoz» rejimi tanlandi! Menga ovozli xabar (voice) yuboring.", reply_markup=get_main_keyboard())
 
 
 @dp.message(F.text == "🧹 Shovqindan tozalash")
@@ -312,7 +310,7 @@ async def set_denoise_mode(message: Message):
         await message.reply("⚠️ Kanalimizga a'zo bo'ling!", reply_markup=get_subscribe_keyboard())
         return
     db.set_user_mode(user.id, "denoise")
-    await message.reply("✅ **«Shovqindan tozalash»** rejimi tanlandi! Ovozli xabar yuboring, fon shovqinini tozalab beraman.", reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    await message.reply("✅ «Shovqindan tozalash» rejimi tanlandi! Ovozli xabar yuboring, fon shovqinini tozalab beraman.", reply_markup=get_main_keyboard())
 
 
 @dp.message(F.text == "📝 Matnga aylantirish (15s)")
@@ -322,7 +320,7 @@ async def set_text_mode(message: Message):
         await message.reply("⚠️ Kanalimizga a'zo bo'ling!", reply_markup=get_subscribe_keyboard())
         return
     db.set_user_mode(user.id, "text")
-    await message.reply("✅ **«Matnga aylantirish (15s)»** rejimi tanlandi!\nMaksimal 15 soniyagacha ovoz yuboring. O'zbek, Rus, Ingliz, Turk va boshqa tillarni taniydi.", reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    await message.reply("✅ «Matnga aylantirish (15s)» rejimi tanlandi!\nMaksimal 15 soniyagacha ovoz yuboring. O'zbek, Rus, Ingliz, Turk va boshqa tillarni taniydi.", reply_markup=get_main_keyboard())
 
 
 @dp.message(F.text == "🎭 Hazilkash AI")
@@ -333,7 +331,7 @@ async def start_roast_chat(message: Message):
         return
     db.set_user_mode(user.id, "roast")
     db.set_chat_state(user.id, "ask_name")
-    await message.reply("🎭 **Hazilkash AI suhbatiga xush kelibsiz!**\n\nKeling, oldin tanishib olaylik. Ismingiz nima?", reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    await message.reply("🎭 Hazilkash AI suhbatiga xush kelibsiz!\n\nKeling, oldin tanishib olaylik. Ismingiz nima?", reply_markup=get_main_keyboard())
 
 
 @dp.message(Command("help"))
@@ -341,15 +339,15 @@ async def handle_help(message: Message):
     bot_info = await bot.get_me()
     username = bot_info.username or "bot"
     text = (
-        "💡 **Botdan foydalanish:**\n\n"
-        "1. 🔁 **Teskari ovoz:** Ovozni teskarisiga o'giradi\n"
-        "2. 🧹 **Shovqindan tozalash:** G'uvillash va shovqinlarni o'chiradi\n"
-        "3. 📝 **Matnga aylantirish:** 15s gacha ovozlarni barcha tillarda matn qiladi\n"
-        "4. 🎭 **Hazilkash AI:** Ism va yoshingiz bo'yicha hazil qiladi\n\n"
+        "💡 Botdan foydalanish:\n\n"
+        "1. 🔁 Teskari ovoz: Ovozni teskarisiga o'giradi\n"
+        "2. 🧹 Shovqindan tozalash: G'uvillash va shovqinlarni o'chiradi\n"
+        "3. 📝 Matnga aylantirish: 15s gacha ovozlarni barcha tillarda matn qiladi\n"
+        "4. 🎭 Hazilkash AI: Ism va yoshingiz bo'yicha hazil qiladi\n\n"
         "📢 Kanal: @NovaTechLab\n"
         f"@{username}"
     )
-    await message.reply(text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    await message.reply(text, reply_markup=get_main_keyboard())
 
 
 @dp.message(Command("admin"))
@@ -367,14 +365,14 @@ async def handle_admin(message: Message):
         users_text += f"{idx}. {u['first_name']} ({uname}) — {u['last_active']}\n"
 
     msg = (
-        "👑 **Admin boshqaruv paneli**\n\n"
-        f"👥 **Jami foydalanuvchilar:** {stats['total_users']} ta\n"
-        f"⚡ **Jami so'rovlar soni:** {stats['total_requests']} ta\n"
-        f"📅 **Bugungi so'rovlar:** {stats['today_requests']} ta\n"
-        f"🔥 **Bugungi faol odamlar:** {stats['today_active_users']} ta\n\n"
-        f"📋 **Oxirgi kirgan foydalanuvchilar:**\n{users_text}"
+        "👑 Admin boshqaruv paneli\n\n"
+        f"👥 Jami foydalanuvchilar: {stats['total_users']} ta\n"
+        f"⚡ Jami so'rovlar soni: {stats['total_requests']} ta\n"
+        f"📅 Bugungi so'rovlar: {stats['today_requests']} ta\n"
+        f"🔥 Bugungi faol odamlar: {stats['today_active_users']} ta\n\n"
+        f"📋 Oxirgi kirgan foydalanuvchilar:\n{users_text}"
     )
-    await message.reply(msg, reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    await message.reply(msg, reply_markup=get_main_keyboard())
 
 
 # Ovozli xabarlar
