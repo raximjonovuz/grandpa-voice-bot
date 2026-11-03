@@ -1,0 +1,7 @@
+name = "voice-telegram-worker"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+BACKEND_URL = "https://grandpa-voice-bot.onrender.com"
+BOT_TOKEN = "9036541933:AAHgj9J9zvOzy9DNB40KTQYxAfpbRSZnkOY"

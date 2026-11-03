@@ -1,0 +1,10 @@
+{
+  "name": "voice-telegram-worker",
+  "version": "1.0.0",
+  "description": "Telegram Voice Bot Gateway on Cloudflare Workers",
+  "main": "src/index.js",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {}
+}
