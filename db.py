@@ -11,19 +11,26 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    # Foydalanuvchilar jadvali
+    # Foydalanuvchilar jadvali (tanlangan rejim bilan)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             first_name TEXT,
             last_name TEXT,
+            mode TEXT DEFAULT 'reverse',
             joined_at TEXT,
             last_active TEXT
         )
     """)
 
-    # So'rovlar (ovoz qayta ishlash) statistikasi
+    # Agar 'mode' ustuni avvalgi versiyada bo'lmasa, qo'shib qo'yish
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN mode TEXT DEFAULT 'reverse'")
+    except sqlite3.OperationalError:
+        pass
+
+    # So'rovlar statistikasi
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,12 +61,33 @@ def add_or_update_user(user_id: int, username: Optional[str], first_name: Option
         """, (username, first_name, last_name, now_str, user_id))
     else:
         cursor.execute("""
-            INSERT INTO users (user_id, username, first_name, last_name, joined_at, last_active)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO users (user_id, username, first_name, last_name, mode, joined_at, last_active)
+            VALUES (?, ?, ?, ?, 'reverse', ?, ?)
         """, (user_id, username, first_name, last_name, now_str, now_str))
 
     conn.commit()
     conn.close()
+
+
+def set_user_mode(user_id: int, mode: str):
+    """Foydalanuvchi tanlagan rejimni saqlash ('reverse' yoki 'text')."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET mode = ? WHERE user_id = ?", (mode, user_id))
+    conn.commit()
+    conn.close()
+
+
+def get_user_mode(user_id: int) -> str:
+    """Foydalanuvchining hozirgi rejimini olish."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT mode FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row and row[0]:
+        return row[0]
+    return "reverse"
 
 
 def log_request(user_id: int, request_type: str = "voice_reverse"):

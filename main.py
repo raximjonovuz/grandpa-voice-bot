@@ -6,7 +6,13 @@ from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, FSInputFile, BotCommand, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import (
+    Message, 
+    FSInputFile, 
+    BotCommand, 
+    ReplyKeyboardMarkup, 
+    KeyboardButton
+)
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 from dotenv import load_dotenv
@@ -19,7 +25,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - [%(levelname)s] - %(name)s - %(message)s"
 )
-logger = logging.getLogger("ReverseVoiceBot")
+logger = logging.getLogger("VoiceBot")
 
 load_dotenv()
 raw_token = os.getenv("BOT_TOKEN") or os.getenv("bottoken")
@@ -57,9 +63,20 @@ def is_admin_user(username: str, user_id: int) -> bool:
     return any(a in uname for a in ["o_raximjonov", "raximjonov"]) or uname in ADMIN_USERNAMES
 
 
+def get_main_keyboard() -> ReplyKeyboardMarkup:
+    """Pastda doimiy turadigan qulay bo'limlar menyusi."""
+    kb = [
+        [
+            KeyboardButton(text="🔁 Teskari ovoz"),
+            KeyboardButton(text="📝 Matnga aylantirish")
+        ]
+    ]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+
 async def set_bot_commands(bot: Bot):
     commands = [
-        BotCommand(command="start", description="Botni ishga tushirish"),
+        BotCommand(command="start", description="Botni ishga tushirish va rejim tanlash"),
         BotCommand(command="help", description="Yordam va qo'llanma"),
         BotCommand(command="admin", description="Admin paneli (statistika)")
     ]
@@ -106,12 +123,11 @@ async def convert_to_wav(input_path: Path, output_wav: Path) -> None:
 
 
 def recognize_speech_from_wav(wav_path: Path) -> str:
-    """WAV fayldan nutqni matnga aylantirish (uz-UZ, ru-RU fallback)."""
+    """WAV fayldan nutqni matnga aylantirish."""
     recognizer = sr.Recognizer()
     with sr.AudioFile(str(wav_path)) as source:
         audio_data = recognizer.record(source)
 
-    # 1-navbatda o'zbek tili, tushunmasa rus/ingliz
     for lang in ["uz-UZ", "ru-RU", "en-US"]:
         try:
             text = recognizer.recognize_google(audio_data, language=lang)
@@ -120,7 +136,7 @@ def recognize_speech_from_wav(wav_path: Path) -> str:
         except (sr.UnknownValueError, sr.RequestError):
             continue
 
-    return "Nutqni aniqlab bo'lmadi (ovoz juda past yoki noaniq)."
+    return "Nutqni aniqlab bo'lmadi (ovoz juda past yoki shovqinli bo'lishi mumkin)."
 
 
 @dp.message(CommandStart())
@@ -133,22 +149,43 @@ async def handle_start(message: Message):
     if is_admin_user(user.username, user.id):
         text = (
             f"Assalomu alaykum, hurmatli Admin ({user.first_name})! 👑\n\n"
-            "Siz bot boshqaruvchisi sifatida tanildingiz.\n\n"
-            "Mavjud buyruqlar:\n"
-            "• /admin — Bot statistikasi\n"
-            "• /help — Bot imkoniyatlari\n\n"
+            "Qanday amal bajaramiz? Quyidagi bo'limlardan birini tanlang, so'ng ovoz yuboring:\n\n"
+            "1. 🔁 **Teskari ovoz** — yuborilgan ovozni teskarisiga o'giradi\n"
+            "2. 📝 **Matnga aylantirish** — ovozni matn qilib beradi\n\n"
             f"@{username}"
         )
     else:
         text = (
             f"Assalomu alaykum, {user.first_name}! 🎙️✨\n\n"
-            "Menga ixtiyoriy **ovozli xabar (voice)** yuboring!\n\n"
-            "Mavjud xizmatlar:\n"
-            "1. 🔁 **Ovozni teskari qilish** (Reverse Voice)\n"
-            "2. 📝 **Ovozni matnga aylantirish** (Voice to Text)\n\n"
+            "Ovoz bilan qanday ishlaymiz? Avval quyidagi bo'limlardan birini tanlang:\n\n"
+            "1. 🔁 **Teskari ovoz**\n"
+            "2. 📝 **Matnga aylantirish**\n\n"
+            "Kerakli bo'limni bosing, so'ng ovozli xabar (voice) yuboring!\n\n"
             f"@{username}"
         )
-    await message.reply(text)
+    await message.reply(text, reply_markup=get_main_keyboard())
+
+
+@dp.message(F.text == "🔁 Teskari ovoz")
+async def set_reverse_mode(message: Message):
+    user = message.from_user
+    db.set_user_mode(user.id, "reverse")
+    await message.reply(
+        "✅ **\"Teskari ovoz\"** rejimi tanlandi!\n\n"
+        "Endi menga ovozli xabar (voice) yuboring. Men uni teskarisiga o'girib beraman.",
+        reply_markup=get_main_keyboard()
+    )
+
+
+@dp.message(F.text == "📝 Matnga aylantirish")
+async def set_text_mode(message: Message):
+    user = message.from_user
+    db.set_user_mode(user.id, "text")
+    await message.reply(
+        "✅ **\"Matnga aylantirish\"** rejimi tanlandi!\n\n"
+        "Endi menga ovozli xabar (voice) yuboring. Men undagi gaplarni matn qilib yozib beraman.",
+        reply_markup=get_main_keyboard()
+    )
 
 
 @dp.message(Command("help"))
@@ -159,14 +196,14 @@ async def handle_help(message: Message):
     username = bot_info.username or "bot"
     text = (
         "💡 Botdan foydalanish qo'llanmasi:\n\n"
-        "1. Menga ovozli xabar (voice) yuboring.\n"
-        "2. Bot sizga 2 ta tugma chiqarib beradi:\n"
-        "   • 🔁 Teskari ovoz — ovozni teskarisiga o'giradi\n"
-        "   • 📝 Matnga aylantirish — ovozdagi gaplarni matn qilib beradi\n"
-        "3. Kerakli tugmani tanlang va natijani oling!\n\n"
+        "1. Pastdagi tugmalardan kerakli bo'limni tanlang:\n"
+        "   • 🔁 Teskari ovoz\n"
+        "   • 📝 Matnga aylantirish\n"
+        "2. So'ng mikrofonni bosib ovozli xabar (voice) yuboring.\n"
+        "3. Bot tanlangan bo'lim bo'yicha darhol javob qaytaradi!\n\n"
         f"@{username}"
     )
-    await message.reply(text)
+    await message.reply(text, reply_markup=get_main_keyboard())
 
 
 @dp.message(Command("admin"))
@@ -178,7 +215,8 @@ async def handle_admin(message: Message):
         uname = f"@{user.username}" if user.username else "username yo'q"
         await message.reply(
             f"Kechirasiz, ushbu buyruq faqat bot admini uchun!\n"
-            f"Sizning profilingiz: {uname} (ID: {user.id})"
+            f"Sizning profilingiz: {uname} (ID: {user.id})",
+            reply_markup=get_main_keyboard()
         )
         return
 
@@ -198,10 +236,10 @@ async def handle_admin(message: Message):
         f"🔥 Bugungi faol odamlar: {stats['today_active_users']} ta\n\n"
         f"📋 Oxirgi kirgan foydalanuvchilar:\n{users_text}"
     )
-    await message.reply(msg)
+    await message.reply(msg, reply_markup=get_main_keyboard())
 
 
-# Ovoz qabul qilish va inline tugmalar bilan tanlov berish
+# Ovoz qabul qilish va tanlangan rejim bo'yicha darhol ishlash
 @dp.message(F.voice)
 async def handle_voice(message: Message):
     voice = message.voice
@@ -215,70 +253,54 @@ async def handle_voice(message: Message):
         await message.reply(f"⚠️ Ovoz juda uzun. Maksimal {MAX_VOICE_DURATION} soniya.")
         return
 
-    # Inline tugmalar: 1. Teskari ovoz  2. Matnga aylantirish
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🔁 Teskari ovoz", callback_data=f"rev:{voice.file_id}"),
-            InlineKeyboardButton(text="📝 Matnga aylantirish", callback_data=f"txt:{voice.file_id}")
-        ]
-    ])
-
-    await message.reply(
-        "🎧 Ovoz qabul qilindi! Qanday amal bajarilsin?",
-        reply_markup=keyboard
-    )
-
-
-# Tugma bosilganda ishlovchi callback
-@dp.callback_query(F.data.startswith("rev:") | F.data.startswith("txt:"))
-async def handle_voice_action(callback: CallbackQuery):
-    action, file_id = callback.data.split(":", 1)
-    user = callback.from_user
-    bot_info = await bot.get_me()
-    bot_tag = f"@{bot_info.username}" if bot_info.username else ""
+    # Foydalanuvchining hozirgi tanlangan rejimini olamiz
+    mode = db.get_user_mode(user.id)
 
     task_id = uuid.uuid4().hex
     input_file = TEMP_DIR / f"in_{task_id}.ogg"
 
     try:
-        await callback.answer("Bajarilmoqda...")
-        file_info = await bot.get_file(file_id)
+        file_info = await bot.get_file(voice.file_id)
         if not file_info.file_path:
-            await callback.message.reply("Faylni yuklab bo'lmadi.")
+            await message.reply("Faylni yuklab bo'lmadi.")
             return
 
         await bot.download_file(file_info.file_path, destination=input_file)
+        bot_info = await bot.get_me()
+        bot_tag = f"@{bot_info.username}" if bot_info.username else ""
 
-        if action == "rev":
-            # 1. Teskari ovoz
-            output_file = TEMP_DIR / f"rev_{task_id}.ogg"
-            await process_reverse_voice(input_file, output_file)
-            db.log_request(user.id, "voice_reverse")
-
-            processed_voice = FSInputFile(str(output_file))
-            await callback.message.reply_voice(
-                voice=processed_voice,
-                caption=bot_tag
-            )
-            if output_file.exists():
-                output_file.unlink()
-
-        elif action == "txt":
-            # 2. Voice to text (ovozni matnga aylantirish)
+        if mode == "text":
+            # 2. Voice to text (Ovozni matnga aylantirish)
             wav_file = TEMP_DIR / f"speech_{task_id}.wav"
             await convert_to_wav(input_file, wav_file)
             recognized_text = await asyncio.to_thread(recognize_speech_from_wav, wav_file)
             db.log_request(user.id, "voice_to_text")
 
-            await callback.message.reply(
-                f"📝 **Ovozdagi matn:**\n\n\"{recognized_text}\"\n\n{bot_tag}"
+            await message.reply(
+                f"📝 **Ovozdagi matn:**\n\n\"{recognized_text}\"\n\n{bot_tag}",
+                reply_markup=get_main_keyboard()
             )
             if wav_file.exists():
                 wav_file.unlink()
 
+        else:
+            # 1. Reverse voice (Teskari ovoz)
+            output_file = TEMP_DIR / f"rev_{task_id}.ogg"
+            await process_reverse_voice(input_file, output_file)
+            db.log_request(user.id, "voice_reverse")
+
+            processed_voice = FSInputFile(str(output_file))
+            await message.reply_voice(
+                voice=processed_voice,
+                caption=bot_tag,
+                reply_markup=get_main_keyboard()
+            )
+            if output_file.exists():
+                output_file.unlink()
+
     except Exception as e:
-        logger.exception(f"Callback xatolik: {e}")
-        await callback.message.reply("❌ Xatolik yuz berdi. Qaytadan urinib ko'ring.")
+        logger.exception(f"Ovoz ishlash xatosi: {e}")
+        await message.reply("❌ Xatolik yuz berdi. Qaytadan urinib ko'ring.", reply_markup=get_main_keyboard())
 
     finally:
         if input_file.exists():
@@ -310,7 +332,10 @@ async def handle_text(message: Message):
 
     bot_info = await bot.get_me()
     bot_tag = f"@{bot_info.username}" if bot_info.username else ""
-    await message.reply(f"Iltimos, ovozli xabar (voice) yuboring!\n\n{bot_tag}")
+    await message.reply(
+        f"Iltimos, pastdagi bo'limlardan birini tanlang va ovozli xabar (voice) yuboring!\n\n{bot_tag}",
+        reply_markup=get_main_keyboard()
+    )
 
 
 async def on_startup(bot: Bot) -> None:
