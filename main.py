@@ -14,10 +14,7 @@ from aiogram.types import (
     FSInputFile, 
     BotCommand, 
     ReplyKeyboardMarkup, 
-    KeyboardButton,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    CallbackQuery
+    KeyboardButton
 )
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
@@ -42,10 +39,6 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 
 ADMIN_USERNAMES = ["o_raximjonov", "o_raximjonovuz"]
 
-# Majburiy obuna kanali
-REQUIRED_CHANNEL = "@NovaTechLab"
-CHANNEL_URL = "https://t.me/NovaTechLab"
-
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://grandpa-voice-bot.onrender.com").rstrip("/")
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
@@ -69,24 +62,6 @@ db.init_db()
 def is_admin_user(username: str, user_id: int) -> bool:
     uname = (username or "").lower().strip("@").strip()
     return any(a in uname for a in ["o_raximjonov", "raximjonov"]) or uname in ADMIN_USERNAMES
-
-
-async def check_channel_subscription(user_id: int) -> bool:
-    """Foydalanuvchi kanalga a'zo bo'lganmi yoki yo'qligini qat'iy tekshirish."""
-    try:
-        member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=user_id)
-        return member.status in ["creator", "administrator", "member"]
-    except Exception as e:
-        logger.warning(f"Obuna tekshirish: user {user_id} a'zo emas ({e})")
-        return False
-
-
-def get_subscribe_keyboard() -> InlineKeyboardMarkup:
-    """Kanalga a'zo bo'lish tugmalari."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Kanalga a'zo bo'lish", url=CHANNEL_URL)],
-        [InlineKeyboardButton(text="✅ A'zo bo'ldim (Tekshirish)", callback_data="check_sub")]
-    ])
 
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
@@ -129,7 +104,6 @@ async def process_reverse_voice(input_path: Path, output_path: Path) -> None:
 async def process_denoise_voice(input_path: Path, output_path: Path) -> None:
     """Ovozdagi shovqinni chuqur tozalash (AI Denoise filtri)."""
     async with processing_semaphore:
-        # afftdn (FFT Denoise) + highpass (pastki g'uvillashlarni kesish) + lowpass (chiyillashni kesish) + acompressor
         audio_filter = "highpass=f=80,lowpass=f=8000,afftdn=nr=18:nf=-30,acompressor=threshold=-18dB:ratio=3"
         cmd = [
             "ffmpeg", "-y",
@@ -163,12 +137,10 @@ def transcribe_with_groq_whisper(audio_file_path: Path) -> str:
         file_bytes = f.read()
 
     data_parts = []
-    # model parametri
     data_parts.append(f"--{boundary}".encode())
     data_parts.append(b'Content-Disposition: form-data; name="model"\r\n')
     data_parts.append(b"whisper-large-v3-turbo")
 
-    # file parametri
     data_parts.append(f"--{boundary}".encode())
     data_parts.append(b'Content-Disposition: form-data; name="file"; filename="audio.mp3"')
     data_parts.append(b"Content-Type: audio/mpeg\r\n")
@@ -192,25 +164,24 @@ def transcribe_with_groq_whisper(audio_file_path: Path) -> str:
 
 
 def generate_roast_chat(user_name: str, user_age: str, user_message: str) -> str:
-    """Llama-3.1-8b-instant yordamida yengil hazil va kulgili javob berish."""
+    """Qwen3.8-27b yordamida yengil hazil va kulgili javob berish."""
     url = "https://api.groq.com/openai/v1/chat/completions"
     
     system_prompt = (
-        "Sen Telegram botidagi kulgili, o'tkir tilli, hazilkash va biroz 'trolling' qiluvchi do'stsan. "
-        "Foydalanuvchi bilan o'zbek tilida gaplashasan. "
+        "Sen Telegram botdagi do'stona, o'tkir tilli va hazilkash o'zbekcha AI do'stsan. "
         f"Foydalanuvchining ismi: {user_name}, yoshi: {user_age}. "
-        "Uning yoshi, ismi yoki yozgan gapi ustidan xafagarchiliksiz, yengil, samimiy va kulgili qilib hazil qil (roast). "
-        "Javobing 2-3 ta qisqa jumladan oshmasin, kulgili va ixcham bo'lsin. Emojilardan foydalan."
+        "Foydalanuvchining gapi, yoshi yoki ismi ustidan o'zbekcha samimiy, yengil, xafagarchiliksiz va kulgili qilib hazil qil (roast). "
+        "Javobing 2 ta qisqa jumladan oshmasin, kulgili va ixcham bo'lsin. Kulgili emojilar ishlat."
     )
 
     payload = {
-        "model": "llama-3.1-8b-instant",
+        "model": "qwen/qwen3.8-27b",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message}
         ],
-        "max_tokens": 150,
-        "temperature": 0.8
+        "max_tokens": 120,
+        "temperature": 0.85
     }
 
     req = urllib.request.Request(
@@ -235,50 +206,12 @@ def generate_roast_chat(user_name: str, user_age: str, user_message: str) -> str
 
 # --- Telegram Bot Handlerlari ---
 
-@dp.callback_query(F.data == "check_sub")
-async def handle_check_subscription(callback: CallbackQuery):
-    user = callback.from_user
-    db.add_or_update_user(user.id, user.username, user.first_name, user.last_name)
-    is_sub = await check_channel_subscription(user.id)
-
-    if is_sub:
-        await callback.answer("✅ Obuna tasdiqlandi!")
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-        await callback.message.answer(
-            f"Xush kelibsiz, {user.first_name}! 🎙️✨\n\n"
-            "Pastdagi bo'limlardan birini tanlang:\n"
-            "1. 🔁 Teskari ovoz\n"
-            "2. 🧹 Shovqindan tozalash\n"
-            "3. 📝 Matnga aylantirish (15s)\n"
-            "4. 🎭 Hazilkash AI\n\n"
-            "📢 Homiy: @NovaTechLab",
-            reply_markup=get_main_keyboard()
-        )
-    else:
-        await callback.answer("❌ Hali kanalga a'zo bo'lmadingiz. Iltimos, obuna bo'ling!", show_alert=True)
-
-
 @dp.message(CommandStart())
 async def handle_start(message: Message):
     user = message.from_user
     db.add_or_update_user(user.id, user.username, user.first_name, user.last_name)
     bot_info = await bot.get_me()
-    username = bot_info.username or "bot"
-
-    # Hamma uchun kanal obunasini tekshirish
-    is_sub = await check_channel_subscription(user.id)
-    if not is_sub:
-        await message.reply(
-            "👋 Assalomu alaykum!\n\n"
-            "Botdan to'liq foydalanish uchun rasmiy kanalimizga a'zo bo'ling:\n"
-            "👉 @NovaTechLab\n\n"
-            "Obuna bo'lgach, «✅ A'zo bo'ldim» tugmasini bosing:",
-            reply_markup=get_subscribe_keyboard()
-        )
-        return
+    bot_tag = f"@{bot_info.username}" if bot_info.username else ""
 
     text = (
         f"Assalomu alaykum, {user.first_name}! 🎙️✨\n\n"
@@ -287,8 +220,7 @@ async def handle_start(message: Message):
         "2. 🧹 Shovqindan tozalash — ovozdagi shovqinlarni tozalaydi\n"
         "3. 📝 Matnga aylantirish — 15s ovozni matn qilib beradi\n"
         "4. 🎭 Hazilkash AI — siz bilan hazillashadigan AI chat\n\n"
-        "📢 Homiy kanal: @NovaTechLab\n"
-        f"@{username}"
+        f"{bot_tag}"
     )
     await message.reply(text, reply_markup=get_main_keyboard())
 
@@ -296,56 +228,63 @@ async def handle_start(message: Message):
 @dp.message(F.text == "🔁 Teskari ovoz")
 async def set_reverse_mode(message: Message):
     user = message.from_user
-    if not await check_channel_subscription(user.id):
-        await message.reply("⚠️ Kanalimizga a'zo bo'ling!", reply_markup=get_subscribe_keyboard())
-        return
     db.set_user_mode(user.id, "reverse")
-    await message.reply("✅ «Teskari ovoz» rejimi tanlandi! Menga ovozli xabar (voice) yuboring.", reply_markup=get_main_keyboard())
+    bot_info = await bot.get_me()
+    bot_tag = f"@{bot_info.username}" if bot_info.username else ""
+    await message.reply(
+        f"✅ «Teskari ovoz» rejimi tanlandi!\n\nMenga ovozli xabar (voice) yuboring, uni teskarisiga o'girib beraman.\n\n{bot_tag}",
+        reply_markup=get_main_keyboard()
+    )
 
 
 @dp.message(F.text == "🧹 Shovqindan tozalash")
 async def set_denoise_mode(message: Message):
     user = message.from_user
-    if not await check_channel_subscription(user.id):
-        await message.reply("⚠️ Kanalimizga a'zo bo'ling!", reply_markup=get_subscribe_keyboard())
-        return
     db.set_user_mode(user.id, "denoise")
-    await message.reply("✅ «Shovqindan tozalash» rejimi tanlandi! Ovozli xabar yuboring, fon shovqinini tozalab beraman.", reply_markup=get_main_keyboard())
+    bot_info = await bot.get_me()
+    bot_tag = f"@{bot_info.username}" if bot_info.username else ""
+    await message.reply(
+        f"✅ «Shovqindan tozalash» rejimi tanlandi!\n\nOvozli xabar yuboring, ortiqcha fon shovqinlarini tozalab beraman.\n\n{bot_tag}",
+        reply_markup=get_main_keyboard()
+    )
 
 
 @dp.message(F.text == "📝 Matnga aylantirish (15s)")
 async def set_text_mode(message: Message):
     user = message.from_user
-    if not await check_channel_subscription(user.id):
-        await message.reply("⚠️ Kanalimizga a'zo bo'ling!", reply_markup=get_subscribe_keyboard())
-        return
     db.set_user_mode(user.id, "text")
-    await message.reply("✅ «Matnga aylantirish (15s)» rejimi tanlandi!\nMaksimal 15 soniyagacha ovoz yuboring. O'zbek, Rus, Ingliz, Turk va boshqa tillarni taniydi.", reply_markup=get_main_keyboard())
+    bot_info = await bot.get_me()
+    bot_tag = f"@{bot_info.username}" if bot_info.username else ""
+    await message.reply(
+        f"✅ «Matnga aylantirish (15s)» rejimi tanlandi!\n\nMaksimal 15 soniyagacha ovoz yuboring. O'zbek, Rus, Ingliz, Turk va boshqa tillarni taniydi.\n\n{bot_tag}",
+        reply_markup=get_main_keyboard()
+    )
 
 
 @dp.message(F.text == "🎭 Hazilkash AI")
 async def start_roast_chat(message: Message):
     user = message.from_user
-    if not await check_channel_subscription(user.id):
-        await message.reply("⚠️ Kanalimizga a'zo bo'ling!", reply_markup=get_subscribe_keyboard())
-        return
     db.set_user_mode(user.id, "roast")
     db.set_chat_state(user.id, "ask_name")
-    await message.reply("🎭 Hazilkash AI suhbatiga xush kelibsiz!\n\nKeling, oldin tanishib olaylik. Ismingiz nima?", reply_markup=get_main_keyboard())
+    bot_info = await bot.get_me()
+    bot_tag = f"@{bot_info.username}" if bot_info.username else ""
+    await message.reply(
+        f"🎭 Hazilkash AI suhbatiga xush kelibsiz!\n\nKeling, oldin tanishib olaylik. Ismingiz nima?\n\n{bot_tag}",
+        reply_markup=get_main_keyboard()
+    )
 
 
 @dp.message(Command("help"))
 async def handle_help(message: Message):
     bot_info = await bot.get_me()
-    username = bot_info.username or "bot"
+    bot_tag = f"@{bot_info.username}" if bot_info.username else ""
     text = (
         "💡 Botdan foydalanish:\n\n"
         "1. 🔁 Teskari ovoz: Ovozni teskarisiga o'giradi\n"
         "2. 🧹 Shovqindan tozalash: G'uvillash va shovqinlarni o'chiradi\n"
         "3. 📝 Matnga aylantirish: 15s gacha ovozlarni barcha tillarda matn qiladi\n"
         "4. 🎭 Hazilkash AI: Ism va yoshingiz bo'yicha hazil qiladi\n\n"
-        "📢 Kanal: @NovaTechLab\n"
-        f"@{username}"
+        f"{bot_tag}"
     )
     await message.reply(text, reply_markup=get_main_keyboard())
 
@@ -385,10 +324,6 @@ async def handle_voice(message: Message):
     user = message.from_user
     db.add_or_update_user(user.id, user.username, user.first_name, user.last_name)
 
-    if not await check_channel_subscription(user.id):
-        await message.reply("⚠️ Kechirasiz, botdan foydalanish uchun kanalimizga a'zo bo'ling!", reply_markup=get_subscribe_keyboard())
-        return
-
     mode = db.get_user_mode(user.id)
     bot_info = await bot.get_me()
     bot_tag = f"@{bot_info.username}" if bot_info.username else ""
@@ -397,7 +332,7 @@ async def handle_voice(message: Message):
     if mode == "text" and voice.duration and voice.duration > MAX_VOICE_DURATION:
         await message.reply(
             f"⚠️ Ovoz juda uzun ({voice.duration} soniya)!\n"
-            f"Matnga aylantirish uchun maksimal {MAX_VOICE_DURATION} soniyagacha bo'lgan ovoz yuboring.",
+            f"Matnga aylantirish uchun maksimal {MAX_VOICE_DURATION} soniyagacha bo'lgan ovoz yuboring.\n\n{bot_tag}",
             reply_markup=get_main_keyboard()
         )
         return
@@ -408,7 +343,7 @@ async def handle_voice(message: Message):
     try:
         file_info = await bot.get_file(voice.file_id)
         if not file_info.file_path:
-            await message.reply("Faylni yuklab bo'lmadi.")
+            await message.reply(f"Faylni yuklab bo'lmadi.\n\n{bot_tag}")
             return
 
         await bot.download_file(file_info.file_path, destination=input_file)
@@ -422,10 +357,10 @@ async def handle_voice(message: Message):
 
             clean_text = transcription.replace("`", "'")
             response_text = (
-                "📝 **Ovozdagi matn:**\n\n"
+                "📝 Ovozdagi matn:\n\n"
                 f"`{clean_text}`\n\n"
-                "👆 *Matn ustiga bosing, avtomatik nusxalanadi!*\n\n"
-                "📢 Homiy kanal: @NovaTechLab"
+                "👆 Matn ustiga bosing, avtomatik nusxalanadi!\n\n"
+                f"{bot_tag}"
             )
             await message.reply(response_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
             if mp3_file.exists():
@@ -463,7 +398,7 @@ async def handle_voice(message: Message):
 
     except Exception as e:
         logger.exception(f"Ovoz ishlash xatosi: {e}")
-        await message.reply("❌ Xatolik yuz berdi. Qaytadan urinib ko'ring.", reply_markup=get_main_keyboard())
+        await message.reply(f"❌ Xatolik yuz berdi. Qaytadan urinib ko'ring.\n\n{bot_tag}", reply_markup=get_main_keyboard())
 
     finally:
         if input_file.exists():
@@ -478,10 +413,8 @@ async def handle_voice(message: Message):
 async def handle_text(message: Message):
     user = message.from_user
     db.add_or_update_user(user.id, user.username, user.first_name, user.last_name)
-
-    if not await check_channel_subscription(user.id):
-        await message.reply("⚠️ Botdan foydalanish uchun kanalimizga obuna bo'ling!", reply_markup=get_subscribe_keyboard())
-        return
+    bot_info = await bot.get_me()
+    bot_tag = f"@{bot_info.username}" if bot_info.username else ""
 
     state = db.get_chat_state(user.id)
     step = state["step"]
@@ -501,7 +434,7 @@ async def handle_text(message: Message):
         await message.reply(
             f"Zo'r! Demak {custom_name}, {age} yosh.\n\n"
             f"{first_roast}\n\n"
-            "Endi istalgan narsangizni yozing, hazil bilan javob qaytaraman! 😆",
+            f"Endi istalgan narsangizni yozing, hazil bilan javob qaytaraman! 😆\n\n{bot_tag}",
             reply_markup=get_main_keyboard()
         )
         return
@@ -511,7 +444,7 @@ async def handle_text(message: Message):
         age = state["age"] or "noma'lum"
         roast_reply = await asyncio.to_thread(generate_roast_chat, custom_name, age, message.text)
         db.log_request(user.id, "roast_chat")
-        await message.reply(roast_reply, reply_markup=get_main_keyboard())
+        await message.reply(f"{roast_reply}\n\n{bot_tag}", reply_markup=get_main_keyboard())
         return
 
     # Admin savollari
@@ -530,8 +463,6 @@ async def handle_text(message: Message):
             await message.reply(f"📋 Oxirgi kirganlar:\n\n{users_list}")
             return
 
-    bot_info = await bot.get_me()
-    bot_tag = f"@{bot_info.username}" if bot_info.username else ""
     await message.reply(
         f"Iltimos, pastdagi 4 ta bo'limdan birini tanlang!\n\n{bot_tag}",
         reply_markup=get_main_keyboard()
