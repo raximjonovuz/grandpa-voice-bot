@@ -1,19 +1,41 @@
 /**
- * Cloudflare Worker - Telegram Webhook Gateway & Proxy
- * Barcha Telegram so'rovlarini 100% ishonchli qabul qiladi,
- * uxlab qolmaydi va Render backend'iga yo'naltiradi.
+ * Cloudflare Worker - Telegram Webhook Gateway, Proxy & Uptime Pinger
+ * 1. Har 5 daqiqada Render backendini ping qilib uxlashdan saqlaydi (Cron Trigger)
+ * 2. Telegram so'rovlarini 100% ishonchli qabul qiladi va Render'ga uzatadi
  */
 
 export default {
+  // Cron trigger (Har 5 daqiqada Render backend'ini uyg'oq ushlab turish)
+  async scheduled(event, env, ctx) {
+    try {
+      const pingUrl = `${env.BACKEND_URL}/health`;
+      const res = await fetch(pingUrl, { method: "GET" });
+      console.log(`[Uptime Ping] Status: ${res.status}`);
+    } catch (e) {
+      console.error(`[Uptime Ping Error]: ${e.message}`);
+    }
+  },
+
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     // Health check endpoint
     if (url.pathname === "/" || url.pathname === "/health") {
+      // Backend holatini ham tekshirib qaytarish
+      let backendStatus = "unknown";
+      try {
+        const ping = await fetch(`${env.BACKEND_URL}/health`, { method: "GET" });
+        backendStatus = ping.status === 200 ? "alive" : `http_${ping.status}`;
+      } catch (e) {
+        backendStatus = "unreachable";
+      }
+
       return new Response(
         JSON.stringify({
           status: "ok",
           platform: "Cloudflare Workers",
+          cron_uptime: "active_every_5_min",
+          backend: backendStatus,
           time: new Date().toISOString()
         }),
         {
@@ -44,7 +66,6 @@ export default {
         });
       } catch (err) {
         // Backend vaqtincha uxlab yotgan bo'lsa ham Telegramga 200 OK qaytaramiz
-        // (Telegram so'rovni qayta-qayta yuborib ban qilib qo'ymasligi uchun)
         return new Response(JSON.stringify({ ok: true, forwarded: false, error: err.message }), {
           status: 200,
           headers: { "Content-Type": "application/json" }

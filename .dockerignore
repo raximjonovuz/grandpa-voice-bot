@@ -1,0 +1,8 @@
+.git
+.gitignore
+rvc_env
+__pycache__
+*.pyc
+temp
+worker/.wrangler
+.env

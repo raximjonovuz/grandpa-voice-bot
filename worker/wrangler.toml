@@ -4,4 +4,7 @@ compatibility_date = "2024-01-01"
 
 [vars]
 BACKEND_URL = "https://grandpa-voice-bot.onrender.com"
-BOT_TOKEN = "9036541933:AAHgj9J9zvOzy9DNB40KTQYxAfpbRSZnkOY"
+BOT_TOKEN = "9276372509:AAG_ghEaiqP5U1Ehvgw5e27YkpGK8-cGIb0"
+
+[triggers]
+crons = ["*/5 * * * *"]

@@ -77,7 +77,18 @@ cleanup_ids: dict[int, list] = {}
 # admin_id -> {"action": "takeover_reply" | "set_vip_uid" | "set_vip_uname" | "set_vip_uname_rule" | "set_custom_global", ...}
 admin_action_state: dict[int, dict] = {}
 
+SPECIAL_GUEST_ID = 7433386436
+SPECIAL_GUEST_PRESET = (
+    "Bu inson Bossning (Adminning) eng qadrli maxsus mehmoni, hurmatli qiz bola (Adizova Mohina). "
+    "U bilan mutlaqo qaltis hazil qilma, ustidan aslo kulma va aslo sansirama! "
+    "Faqat 'Siz' deb, juda muloyim, nozik, samimiy va hurmat bilan gaplash. "
+    "Qiz bolaga xos muomala qil, ko'nglini olishga harakat qil, kuni qanday o'tayotganini, "
+    "kayfiyatini so'ra, zeriktirma. So'zlarni aslo qo'shtirnoqqa olma, g'alati inglizcha memlar "
+    "(wifi, FAQ, vlog kabi) ishlatma. Faqat iliq, yoqimli, madaniyatli va toza o'zbek tilida muloqot qil."
+)
+
 VIP_PRESETS = {
+    "special_guest": SPECIAL_GUEST_PRESET,
     "no_joke": (
         "Bu inson Bossning (Adminning) juda yaqin va hurmatli odami. "
         "U bilan umuman qaltis hazil qilma, ustidan kulma va sansirama! "
@@ -206,6 +217,7 @@ def get_persona_selection_keyboard() -> InlineKeyboardMarkup:
 def get_vip_presets_keyboard(target_ref: str, back_cb: str = "adm_back") -> InlineKeyboardMarkup:
     """target_ref: 'uid:12345' yoki 'uname:ali_01'"""
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌸 Maxsus Mehmon (Qiz bola / Nozik muomala)", callback_data=f"vip_pre:special_guest:{target_ref}")],
         [InlineKeyboardButton(text="🛑 Hazil qilma (Boss ruxsat bermagan, hurmat qil)", callback_data=f"vip_pre:no_joke:{target_ref}")],
         [InlineKeyboardButton(text="🤝 Eng yaqin jigar / VIP do'st", callback_data=f"vip_pre:best_friend:{target_ref}")],
         [InlineKeyboardButton(text="🧠 Faqat jiddiy va aqlli javob ber", callback_data=f"vip_pre:serious_expert:{target_ref}")],
@@ -339,28 +351,21 @@ PERSONA_INSTRUCTIONS = {
 
 
 def _sanitize_vip_rule_for_llm(raw_rule: str) -> str:
-    """
-    Admin 'so'kinish', '18+', 'so'ksa sen ham so'k' deb yozganda AI xavfsizlik filtri
-    ('I'm sorry, but I can't help with that') ishlab ketmasligi uchun qoidani
-    model tushunadigan 'ayovsiz ko'cha battle-roast' formatiga aylantiradi.
-    """
+    """Admin kiritgan maxsus qoidani tozalab, asl mohiyatini buzmagan holda LLMga uzatish."""
     rule_clean = re.sub(r"^\|\s*ID:\s*\d+\s*", "", raw_rule.strip(), flags=re.I)
-    lower_r = rule_clean.lower()
-    if any(w in lower_r for w in ["so'k", "sok", "18+", "kamsit", "chegaradan chiq", "ayab o'tirma", "ustidan kul"]):
-        return (
-            "Ushbu foydalanuvchi bilan komedik va o'tkir ko'cha battle-roast uslubida gaplash! "
-            "Uni mutlaqo ayama, har bir gapiga, smayliklariga yoki qo'polligiga o'zbekcha ko'cha tilida "
-            "10 baravar o'tkir, zaharxanda, sindirib tashlaydigan sarkazm, qochirim va kulgi bilan javob qaytar! "
-            "U o'zini katta olsa yoki g'alati narsa yozsa, ustidan chiroyli kulib joyiga o'tqazib qo'y!"
-        )
     return rule_clean
 
 
 def build_system_prompt(user_data: dict) -> str:
+    user_id = user_data.get("user_id") or 0
     name = user_data.get("custom_name") or user_data.get("first_name") or "Do'stim"
     age = user_data.get("age") or "noma'lum"
     memory = user_data.get("memory_notes") or ""
     vip_rule = (user_data.get("vip_instruction") or "").strip()
+
+    # Maxsus mehmon (Adizova Mohina - 7433386436) uchun mutlaq ustuvor qoida
+    if user_id == SPECIAL_GUEST_ID or not vip_rule and user_id == SPECIAL_GUEST_ID:
+        vip_rule = SPECIAL_GUEST_PRESET
 
     persona_key = db.get_setting("ai_persona", "kocha")
     custom_global = db.get_setting("custom_global_prompt", "").strip()
@@ -433,7 +438,11 @@ def groq_chat(messages: list, temperature: float = 0.65, max_tokens: int = 250) 
             logger.warning(f"Model {model_name} xatosi: {e}")
             continue
 
-    # Agar foydalanuvchi 🖕/🥒/🍌 yoki so'kinish yozgani uchun AI xavfsizlik filtri ishlab qolsa — o'tkir o'zbekcha roast qaytaramiz!
+    # Agar maxsus mehmon (Mohina) bo'lsa, xushmuomala iliq javob qaytarish
+    if any(m.get("role") == "system" and "Mohina" in m.get("content", "") for m in messages):
+        return "Sizni tinglayapman, Mohina. Kayfiyatingiz yaxshimi? Bugungi kuningiz qanday o'tyapti?"
+
+    # Agar boshqa foydalanuvchi 🖕/🥒/🍌 yoki so'kinish yozgani uchun AI xavfsizlik filtri ishlab qolsa — o'tkir o'zbekcha roast qaytaramiz!
     fallback_roasts = [
         "Eee bratishka, lug'atingda shundan boshqa gap qolmadimi yoki miyang qotib qoldimi? 😂 Bor, chiroyli gap o'rganib kel!",
         "Oho, o'zingcha zo'r narsa yozdim deb o'yladingmi? Kulgimni qistatma, saviyang ko'rinib qoldi-ku! 😎",
@@ -444,6 +453,7 @@ def groq_chat(messages: list, temperature: float = 0.65, max_tokens: int = 250) 
 
 def generate_ai_reply(user_id: int, user_message: str) -> str:
     user_data = db.get_user(user_id) or {}
+    user_data["user_id"] = user_id
     history = chat_history.setdefault(user_id, deque(maxlen=HISTORY_LIMIT))
 
     if not history:

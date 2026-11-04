@@ -498,6 +498,15 @@ def get_local_chat_logs(user_id: int, limit: int = 30) -> List[Dict[str, Any]]:
     return [{"sender": r[0], "text": r[1], "time": r[2]} for r in rows]
 
 
+def clear_user_chat_logs(user_id: int):
+    """Foydalanuvchining mahalliy chat xotirasini tozalash."""
+    conn = _get_conn()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM chat_logs WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
 # --- Statistika ---
 
 def log_request(user_id: int, request_type: str = "ai_chat"):
