@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 from aiohttp import web
@@ -35,6 +34,7 @@ async def set_bot_commands(bot_instance: Bot):
     commands = [
         BotCommand(command="start", description="Botni ishga tushirish"),
         BotCommand(command="admin", description="Admin boshqaruv paneli"),
+        BotCommand(command="forget", description="Ma'lumotlarimni o'chirish"),
         BotCommand(command="help", description="Yordam va qo'llanma")
     ]
     await bot_instance.set_my_commands(commands)

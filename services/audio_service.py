@@ -5,7 +5,6 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 from config import GROQ_API_KEY, CONCURRENCY_LIMIT
-from grandpa_voice import process_grandpa_voice
 
 logger = logging.getLogger("AudioService")
 processing_semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)

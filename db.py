@@ -1,13 +1,26 @@
 import sqlite3
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 import cf_storage
 
 DB_PATH = Path(__file__).parent / "bot_database.db"
+TZ = timezone(timedelta(hours=5))  # Toshkent. Serverda (UTC) "bugun" noto'g'ri hisoblanmasligi uchun
+
+
+def _now() -> datetime:
+    return datetime.now(TZ)
+
+
+def _now_str() -> str:
+    return _now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _today_str() -> str:
+    return _now().strftime("%Y-%m-%d")
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -17,8 +30,20 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
-def _async_cloud_backup():
-    """Foydalanuvchilar, VIP qoidalar va sozlamalarni Cloudflare KV ga fonda saqlash."""
+_last_backup_ts = 0.0
+_backup_lock = threading.Lock()
+BACKUP_MIN_INTERVAL = 45  # soniya (Cloudflare KV bepul tarifida kuniga 1000 ta yozish limiti bor)
+
+
+def _async_cloud_backup(force: bool = False):
+    """Foydalanuvchilar, VIP qoidalar va sozlamalarni Cloudflare KV ga fonda saqlash (debounce bilan)."""
+    global _last_backup_ts
+    with _backup_lock:
+        now_ts = time.time()
+        if not force and now_ts - _last_backup_ts < BACKUP_MIN_INTERVAL:
+            return
+        _last_backup_ts = now_ts
+
     def _worker():
         try:
             conn = _get_conn()
@@ -26,7 +51,7 @@ def _async_cloud_backup():
             cur.execute("""
                 SELECT user_id, username, first_name, last_name, mode, chat_step,
                        user_age, user_custom_name, memory_notes, vip_instruction,
-                       admin_paused_until, joined_at, last_active
+                       admin_paused_until, joined_at, last_active, gender
                 FROM users
             """)
             users_data = [
@@ -34,7 +59,7 @@ def _async_cloud_backup():
                     "user_id": r[0], "username": r[1], "first_name": r[2], "last_name": r[3],
                     "mode": r[4], "chat_step": r[5], "user_age": r[6], "user_custom_name": r[7],
                     "memory_notes": r[8], "vip_instruction": r[9], "admin_paused_until": r[10],
-                    "joined_at": r[11], "last_active": r[12]
+                    "joined_at": r[11], "last_active": r[12], "gender": r[13]
                 }
                 for r in cur.fetchall()
             ]
@@ -48,7 +73,7 @@ def _async_cloud_backup():
                 "users": users_data,
                 "vip_rules": vips_data,
                 "settings": settings_data,
-                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "updated_at": _now_str()
             }, with_ttl=False)
         except Exception:
             pass
@@ -84,13 +109,14 @@ def restore_from_cloud_if_needed():
                     INSERT INTO users (
                         user_id, username, first_name, last_name, mode, chat_step,
                         user_age, user_custom_name, memory_notes, vip_instruction,
-                        admin_paused_until, joined_at, last_active
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        admin_paused_until, joined_at, last_active, gender
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     u.get("user_id"), u.get("username"), u.get("first_name"), u.get("last_name"),
                     u.get("mode", "chat"), u.get("chat_step", "none"), u.get("user_age"),
                     u.get("user_custom_name"), u.get("memory_notes", ""), u.get("vip_instruction", ""),
-                    u.get("admin_paused_until", 0), u.get("joined_at"), u.get("last_active")
+                    u.get("admin_paused_until", 0), u.get("joined_at"), u.get("last_active"),
+                    u.get("gender", "")
                 ))
 
         conn.commit()
@@ -129,6 +155,7 @@ def init_db():
         ("memory_notes", "TEXT DEFAULT ''"),
         ("vip_instruction", "TEXT DEFAULT ''"),
         ("admin_paused_until", "INTEGER DEFAULT 0"),
+        ("gender", "TEXT DEFAULT ''"),
     ]
     for col_name, col_def in new_cols:
         try:
@@ -192,7 +219,7 @@ def add_or_update_user(
 ) -> bool:
     conn = _get_conn()
     cursor = conn.cursor()
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = _now_str()
     clean_uname = (username or "").lower().strip("@").strip()
 
     pre_vip = ""
@@ -237,7 +264,7 @@ def get_user(user_id: int) -> Optional[Dict[str, Any]]:
     cursor.execute("""
         SELECT user_id, username, first_name, last_name, mode, chat_step,
                user_custom_name, user_age, memory_notes, vip_instruction,
-               admin_paused_until, joined_at, last_active
+               admin_paused_until, joined_at, last_active, gender
         FROM users WHERE user_id = ?
     """, (user_id,))
     r = cursor.fetchone()
@@ -257,7 +284,8 @@ def get_user(user_id: int) -> Optional[Dict[str, Any]]:
         "vip_instruction": r[9] or "",
         "admin_paused_until": r[10] or 0,
         "joined_at": r[11] or "",
-        "last_active": r[12] or ""
+        "last_active": r[12] or "",
+        "gender": r[13] or ""
     }
 
 
@@ -346,6 +374,52 @@ def update_user_memory(user_id: int, new_note: str):
     _async_cloud_backup()
 
 
+def set_user_memory(user_id: int, notes: str):
+    """Xotirani to'liq almashtiradi (AI tuzatilgan ro'yxat qaytaradi)."""
+    conn = _get_conn()
+    conn.execute("UPDATE users SET memory_notes = ? WHERE user_id = ?", (notes[:500], user_id))
+    conn.commit()
+    conn.close()
+    _async_cloud_backup()
+
+
+def set_user_gender(user_id: int, gender: str):
+    conn = _get_conn()
+    conn.execute("UPDATE users SET gender = ? WHERE user_id = ?", (gender, user_id))
+    conn.commit()
+    conn.close()
+    _async_cloud_backup()
+
+
+def forget_user(user_id: int):
+    """/forget: foydalanuvchining tanishuv ma'lumoti, xotirasi va chat tarixini o'chirish."""
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE users SET user_custom_name = '', user_age = '', memory_notes = '', gender = '', "
+        "chat_step = 'none' WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM chat_logs WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    _async_cloud_backup(force=True)
+
+
+def count_today_user_msgs(user_id: int) -> int:
+    conn = _get_conn()
+    cur = conn.execute(
+        "SELECT COUNT(*) FROM chat_logs WHERE user_id = ? AND sender = 'user' AND created_at LIKE ?",
+        (user_id, f"{_today_str()}%"))
+    n = cur.fetchone()[0]
+    conn.close()
+    return n
+
+
+def count_user_msgs_total(user_id: int) -> int:
+    conn = _get_conn()
+    n = conn.execute("SELECT COUNT(*) FROM chat_logs WHERE user_id = ? AND sender = 'user'", (user_id,)).fetchone()[0]
+    conn.close()
+    return n
+
+
 # --- VIP / Maxsus muomala funksiyalari ---
 
 def set_vip_by_user_id(user_id: int, instruction: str):
@@ -358,7 +432,7 @@ def set_vip_by_user_id(user_id: int, instruction: str):
     cursor.execute("UPDATE users SET vip_instruction = ? WHERE user_id = ?", (instruction.strip(), user_id))
     if uname:
         if instruction.strip():
-            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_str = _now_str()
             cursor.execute(
                 "INSERT OR REPLACE INTO vip_rules (username, instruction, created_at) VALUES (?, ?, ?)",
                 (uname, instruction.strip(), now_str)
@@ -373,7 +447,7 @@ def set_vip_by_user_id(user_id: int, instruction: str):
 
 def set_vip_by_username(username: str, instruction: str) -> Optional[int]:
     clean_uname = username.lower().strip("@").strip()
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = _now_str()
     conn = _get_conn()
     cursor = conn.cursor()
 
@@ -466,7 +540,7 @@ def get_setting(key: str, default: str = "") -> str:
 
 def log_chat_message(user_id: int, sender: str, message_text: str):
     now_ts = int(time.time())
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = _now_str()
     cutoff_ts = now_ts - 259200  # 72 soat
 
     conn = _get_conn()
@@ -512,7 +586,7 @@ def clear_user_chat_logs(user_id: int):
 def log_request(user_id: int, request_type: str = "ai_chat"):
     conn = _get_conn()
     cursor = conn.cursor()
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = _now_str()
     cursor.execute("""
         INSERT INTO requests (user_id, request_type, created_at)
         VALUES (?, ?, ?)
@@ -524,7 +598,7 @@ def log_request(user_id: int, request_type: str = "ai_chat"):
 def get_stats() -> Dict[str, Any]:
     conn = _get_conn()
     cursor = conn.cursor()
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = _today_str()
 
     cursor.execute("SELECT COUNT(*) FROM users")
     total_users = cursor.fetchone()[0]

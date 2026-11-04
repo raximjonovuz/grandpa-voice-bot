@@ -3,7 +3,6 @@ import logging
 import uuid
 import re
 from collections import deque
-from pathlib import Path
 from typing import Dict, List
 
 from aiogram import Router, F, Bot
@@ -23,13 +22,17 @@ from config import (
     ADMIN_IDS,
     MAX_VOICE_DURATION,
     TEMP_DIR,
-    HISTORY_LIMIT
+    HISTORY_LIMIT,
+    DAILY_LIMIT,
+    MEMORY_EVERY
 )
 from services.ai_service import (
     generate_ai_reply,
     record_conversation,
     chat_history,
-    groq_chat
+    groq_chat,
+    update_memory_sync,
+    infer_gender_sync
 )
 from services.audio_service import (
     convert_to_mp3,
@@ -46,6 +49,7 @@ logger = logging.getLogger("UserHandlers")
 user_router = Router()
 
 cleanup_ids: Dict[int, List[int]] = {}
+user_locks: Dict[int, asyncio.Lock] = {}   # bir foydalanuvchining xabarlari navbat bilan ishlansin
 
 
 def get_main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
@@ -97,6 +101,7 @@ async def notify_admins_new_user(bot: Bot, user):
         f"• Telegram ismi: {full_tg_name}\n"
         f"• Username: {uname}\n"
         f"• User ID: {user.id}\n"
+        f"• Bugun qo'shilganlar: {stats['today_new_users']} ta\n"
         f"• Jami a'zolar: {stats['total_users']} ta\n\n"
         "Ushbu foydalanuvchi bilan tezkor boshqaruv:"
     )
@@ -151,9 +156,24 @@ async def handle_help(message: Message):
         "📖 Botdan foydalanish bo'yicha qo'llanma:\n\n"
         "1. 💬 «AI Suhbat» — tugmani bosing va xabar yozing. Bot siz bilan o'zbek tilida erkin suhbatlashadi.\n"
         "2. 📝 «Ovozni matn qilish» — istalgan vaqtda 15 soniyagacha ovozli xabar (voice) yuborsangiz, uni matnga aylantirib beradi.\n"
-        "3. 🔄 «Suhbatni yangilash» — xotirani tozalab, suhbatni yangidan boshlash.\n"
+        "3. 🔄 «Suhbatni yangilash» — xotirani tozalab, suhbatni yangidan boshlash.\n\n"
+        "🔒 Sifatni yaxshilash uchun suhbat qisqa muddat saqlanadi va admin ko'rishi mumkin. "
+        "/forget — ma'lumotlaringizni butunlay o'chirish.\n"
     )
     await message.answer(text, reply_markup=get_main_keyboard(is_adm))
+
+
+@user_router.message(Command("forget"))
+async def handle_forget(message: Message):
+    user = message.from_user
+    admin_action_state.pop(user.id, None)
+    chat_history.pop(user.id, None)
+    db.forget_user(user.id)
+    is_adm = is_admin_user(user.username, user.id)
+    await message.answer(
+        "🗑 Ism, yosh, xotira va suhbat tarixingiz o'chirildi. Xohlasangiz «💬 AI Suhbat» orqali qaytadan tanishamiz.",
+        reply_markup=get_main_keyboard(is_adm)
+    )
 
 
 @user_router.message(F.text == "⬅️ Asosiy menyu")
@@ -383,67 +403,103 @@ async def handle_text_message(message: Message, bot: Bot):
     chat_st = db.get_chat_state(user.id)
     step = chat_st.get("step")
 
-    if step == "ask_name":
-        clean_name = text.split("\n")[0][:40].strip()
-        db.set_chat_state(user.id, "ask_age", custom_name=clean_name)
-        old_ids = cleanup_ids.pop(user.id, [])
-        for mid in old_ids:
-            try:
-                await bot.delete_message(user.id, mid)
-            except Exception:
-                pass
+    # Profil to'liq bo'lmasa (masalan, menyuni bosmasdan yozgan bo'lsa) — avval tanishamiz
+    if step not in ("ask_name", "ask_age") and not (chat_st.get("name") and chat_st.get("age")):
+        db.set_chat_state(user.id, "ask_name")
         sent = await message.answer(
-            f"Tanishganimdan xursandman, {clean_name}! 😊\n\nYoshingiz nechida?",
+            "Qalesan! 😎 Avval tanishib olaylik. Ismingni ayt?",
             reply_markup=get_chat_keyboard(is_adm)
         )
         cleanup_ids[user.id] = [message.message_id, sent.message_id]
         return
 
-    if step == "ask_age":
-        clean_age = text.strip()[:10]
-        cname = chat_st.get("name") or "Do'stim"
-        db.set_chat_state(user.id, "chatting", age=clean_age)
-        old_ids = cleanup_ids.pop(user.id, [])
-        for mid in old_ids:
-            try:
-                await bot.delete_message(user.id, mid)
-            except Exception:
-                pass
-        await message.answer(
-            f"Ajoyib, {cname}! 🎉\nEndi bemalol suhbatlashishimiz mumkin. Nimalar haqida gaplashamiz?",
+    if step == "ask_name":
+        clean_name = text.split("\n")[0].strip()[:40]
+        if len(clean_name) < 2 or not re.search(r"[^\W\d_]", clean_name) or clean_name.startswith("/"):
+            sent = await message.answer("Ismingni harflar bilan yoz, masalan: Ozodbek 🙂", reply_markup=get_chat_keyboard(is_adm))
+            cleanup_ids.setdefault(user.id, []).extend([message.message_id, sent.message_id])
+            return
+        db.set_chat_state(user.id, "ask_age", custom_name=clean_name)
+        sent = await message.answer(
+            f"Tanishganimdan xursandman, {clean_name}! 😊 Yoshing nechida?",
             reply_markup=get_chat_keyboard(is_adm)
         )
+        cleanup_ids.setdefault(user.id, []).extend([message.message_id, sent.message_id])
+        return
+
+    if step == "ask_age":
+        m_age = re.search(r"\d{1,3}", text)
+        age_val = int(m_age.group(0)) if m_age else 0
+        if not (5 <= age_val <= 99):
+            sent = await message.answer("Yoshingni raqam bilan yoz, masalan: 19 🙂", reply_markup=get_chat_keyboard(is_adm))
+            cleanup_ids.setdefault(user.id, []).extend([message.message_id, sent.message_id])
+            return
+
+        cname = chat_st.get("name") or user.first_name or "Do'stim"
+        db.set_chat_state(user.id, "chatting", age=str(age_val))
+        chat_history.pop(user.id, None)
+
+        # Tanishuv savol-javoblarini chatdan o'chiramiz: faqat AI salomi qoladi
+        old_ids = cleanup_ids.pop(user.id, []) + [message.message_id]
+        for mid in old_ids:
+            try:
+                await bot.delete_message(message.chat.id, mid)
+            except Exception:
+                pass
+
+        await bot.send_chat_action(message.chat.id, "typing")
+        gender = await asyncio.to_thread(infer_gender_sync, cname, user.first_name or "")
+        if gender:
+            db.set_user_gender(user.id, gender)
+        greet = await asyncio.to_thread(
+            generate_ai_reply, user.id,
+            f"Salom, men {cname}man. Tanishganimizga qisqa, mos salom yoz.", False
+        )
+        await record_conversation(user.id, "bot", greet)
+        await message.answer(greet, reply_markup=get_chat_keyboard(is_adm))
         return
 
     # 3. AI Suhbat / Jonli chat:
-    await record_conversation(user.id, "user", text)
+    lock = user_locks.setdefault(user.id, asyncio.Lock())
+    async with lock:
+        if not is_adm and db.count_today_user_msgs(user.id) >= DAILY_LIMIT:
+            await message.answer("Bugungi suhbat limiti tugadi 😅 Ertaga davom etamiz!", reply_markup=get_chat_keyboard(is_adm))
+            return
 
-    # Agar ushbu user uchun admin AI ni to'xtatgan bo'lsa (Takeover):
-    paused, rem_sec = db.is_ai_paused(user.id)
-    if paused:
-        admin_ids = db.get_admin_chat_ids(ADMIN_USERNAMES, ADMIN_IDS)
-        u_info = db.get_user(user.id) or {}
-        uname = f"@{u_info.get('username')}" if u_info.get('username') else "yo'q"
-        cname = u_info.get("custom_name") or u_info.get("first_name") or str(user.id)
+        text = text[:1000]
+        await record_conversation(user.id, "user", text)
 
-        adm_notify = (
-            f"📩 Jonli xabar: {cname} ({uname} | ID: {user.id})\n"
-            f"💬 «{text}»\n"
-            f"⏱ AI pauzada ({rem_sec}s qoldi)."
-        )
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✍️ Javob qaytarish", callback_data=f"adm_takeover:{user.id}")],
-            [InlineKeyboardButton(text="🤖 AI ni yoqish", callback_data=f"adm_resume_ai:{user.id}")]
-        ])
-        for aid in admin_ids:
-            try:
-                await bot.send_message(aid, adm_notify, reply_markup=kb)
-            except Exception:
-                pass
-        return
+        # Agar ushbu user uchun admin AI ni to'xtatgan bo'lsa (Takeover):
+        paused, rem_sec = db.is_ai_paused(user.id)
+        if paused:
+            admin_ids = db.get_admin_chat_ids(ADMIN_USERNAMES, ADMIN_IDS)
+            u_info = db.get_user(user.id) or {}
+            uname = f"@{u_info.get('username')}" if u_info.get('username') else "yo'q"
+            cname = u_info.get("custom_name") or u_info.get("first_name") or str(user.id)
 
-    # AI javobini generatsiya qilish
-    db.log_request(user.id, "ai_chat")
-    reply = await asyncio.to_thread(generate_ai_reply, user.id, text)
-    await record_conversation(user.id, "bot", reply)
-    await message.answer(reply, reply_markup=get_chat_keyboard(is_adm))
+            adm_notify = (
+                f"📩 Jonli xabar: {cname} ({uname} | ID: {user.id})\n"
+                f"💬 «{text}»\n"
+                f"⏱ AI pauzada ({rem_sec}s qoldi)."
+            )
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✍️ Javob qaytarish", callback_data=f"adm_takeover:{user.id}")],
+                [InlineKeyboardButton(text="🤖 AI ni yoqish", callback_data=f"adm_resume_ai:{user.id}")]
+            ])
+            for aid in admin_ids:
+                try:
+                    await bot.send_message(aid, adm_notify, reply_markup=kb)
+                except Exception:
+                    pass
+            return
+
+        # AI javobini generatsiya qilish
+        db.log_request(user.id, "ai_chat")
+        await bot.send_chat_action(message.chat.id, "typing")
+        reply = await asyncio.to_thread(generate_ai_reply, user.id, text)
+        await record_conversation(user.id, "bot", reply)
+        await message.answer(reply, reply_markup=get_chat_keyboard(is_adm))
+
+        # Xotirani vaqti-vaqti bilan yangilash (arzon model, fonda)
+        if db.count_user_msgs_total(user.id) % MEMORY_EVERY == 0:
+            asyncio.create_task(asyncio.to_thread(update_memory_sync, user.id))

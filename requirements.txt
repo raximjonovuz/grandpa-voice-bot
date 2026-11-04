@@ -1,6 +1,3 @@
 aiogram>=3.17.0
 aiohttp>=3.11.0
 python-dotenv>=1.0.1
-SpeechRecognition>=3.17.0
-standard-aifc>=3.13.0
-standard-chunk>=3.13.0

@@ -1,5 +1,4 @@
 import os
-import re
 from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
@@ -29,7 +28,11 @@ TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_VOICE_DURATION = 15  # Ovozni matnga aylantirish uchun maksimal 15 soniya
 CONCURRENCY_LIMIT = 5
-HISTORY_LIMIT = 4
+HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "8"))      # AI ga yuboriladigan oxirgi xabarlar (4 juda kam edi)
+DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "80"))         # bir foydalanuvchiga kuniga AI xabar (admin uchun cheksiz)
+MEMORY_EVERY = int(os.getenv("MEMORY_EVERY", "5"))        # har nechta xabardan keyin xotira yangilanadi
+SMALL_MODEL = os.getenv("SMALL_MODEL", "llama-3.1-8b-instant").strip()  # xotira/jins uchun arzon model
+KV_CHAT_LOG = os.getenv("KV_CHAT_LOG", "0").strip() == "1"  # har xabarni Cloudflare KV ga yozish (bepul limit tez tugaydi)
 
 # Maxsus Mehmon (Adizova Mohina)
 SPECIAL_GUEST_ID = 7433386436
@@ -65,11 +68,26 @@ VIP_PRESETS = {
 }
 
 PERSONA_INSTRUCTIONS = {
-    "kocha": "Uslub: Yaqin o'zbek jigar/jo'ra. Erkin, samimiy va hozirjavob hazil bilan gapir.",
-    "faylasuf": "Uslub: Dono faylasuf ustoz. Har gapdan chuqur hikmat topib, salobatli javob ber.",
-    "sarkazm": "Uslub: O'tkir sarkazm va roast ustasi. Qochirim, kulgili kinoya va achchiq hazil bilan javob ber.",
-    "dost": "Uslub: Mehribon va dardkash yaqin do'st. Dalda berib, iliq gapir.",
-    "rasmiy": "Uslub: Rasmiy ekspert. Faqat 'Siz' deb, qisqa, aniq va jiddiy javob ber."
+    "kocha": (
+        "USLUB: ko'cha bola, jo'ra. Tez, qisqa, yengil kinoyali. Ishlat: jo'ra, birodar, qalesan, nima gap, "
+        "zo'r-ku, bomba, dahshat, chill, xo'p-xo'p. Misollar: 'Salom' -> 'Qalesan, jo'ra! Nima gap, yangilik bormi? 😎'; "
+        "'Charchadim' -> 'Voy jo'ra, kimni ko'chirib yurding? 😄 Bir choy ichib dam ol.'; "
+        "'Imtihondan yiqildim' -> 'Hechqisi yo'q, qayta topshirasan, kitob sendan xafa emas 😅 Qaysi fan edi?'"
+    ),
+    "faylasuf": (
+        "USLUB: dono faylasuf. Oddiy so'zlarda chuqur, o'ylantiradigan, hikmatli gap ayt (2-3 jumla). "
+        "Metafora ishlat, hazil kam. Va'z o'qima, savol bilan o'ylantir."
+    ),
+    "sarkazm": (
+        "USLUB: o'tkir sarkazm va yengil roast ustasi. Topqir kinoya, kutilmagan taqqoslash. "
+        "Lekin xafa qilmasdan, o'yin-kulgi darajasida."
+    ),
+    "dost": (
+        "USLUB: mehribon, dardkash yaqin do'st. Iliq, samimiy, dalda beradi, kayfiyatini so'raydi. Hazil yengil."
+    ),
+    "rasmiy": (
+        "USLUB: aqlli ekspert. Aniq, foydali, qisqa javob. Hazil va sleng yo'q. Hurmat bilan 'Siz' deb murojaat qil."
+    ),
 }
 
 REFUSAL_PHRASES = (
