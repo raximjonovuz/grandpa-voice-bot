@@ -4,6 +4,12 @@
  * 2. Telegram so'rovlarini 100% ishonchli qabul qiladi va Render'ga uzatadi
  */
 
+async function sha256Hex(text) {
+  const data = new TextEncoder().encode(text);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
 export default {
   // Cron trigger (Har 5 daqiqada Render backend'ini uyg'oq ushlab turish)
   async scheduled(event, env, ctx) {
@@ -47,7 +53,15 @@ export default {
     // Telegram webhook endpoint: /webhook yoki /webhook/:token
     if (request.method === "POST" && url.pathname.startsWith("/webhook")) {
       const backendUrl = `${env.BACKEND_URL}/webhook/${env.BOT_TOKEN}`;
-      
+
+      // Backend bilan bir xil maxfiy kalit: WEBHOOK_SECRET yoki sha256(BOT_TOKEN)
+      const secret = env.WEBHOOK_SECRET || await sha256Hex(env.BOT_TOKEN);
+
+      // Faqat Telegram (maxfiy kalitni biladigan) so'rovlarini qabul qilamiz
+      if (request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== secret) {
+        return new Response("Forbidden", { status: 403 });
+      }
+
       try {
         const body = await request.clone().arrayBuffer();
 
@@ -55,7 +69,8 @@ export default {
         const response = await fetch(backendUrl, {
           method: "POST",
           headers: {
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "X-Telegram-Bot-Api-Secret-Token": secret
           },
           body: body
         });

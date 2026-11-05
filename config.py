@@ -1,3 +1,4 @@
+import hashlib
 import os
 from pathlib import Path
 from typing import Optional
@@ -19,6 +20,8 @@ ADMIN_USERNAMES = ["o_raximjonov", "raximjonov_admin", "o_raximjonovuz"]
 ADMIN_IDS = {966627404}
 
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://grandpa-voice-bot.onrender.com").rstrip("/")
+# Telegram so'rovlarini tekshirish uchun maxfiy kalit (Render'da WEBHOOK_SECRET bermasangiz, tokendan hosil qilinadi)
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip() or hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 

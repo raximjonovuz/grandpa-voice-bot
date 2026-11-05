@@ -10,7 +10,8 @@ from config import (
     BOT_TOKEN,
     WEBHOOK_URL,
     WEBHOOK_HOST,
-    WEBHOOK_PATH
+    WEBHOOK_PATH,
+    WEBHOOK_SECRET
 )
 from handlers.admin_handlers import admin_router
 from handlers.user_handlers import user_router
@@ -46,7 +47,8 @@ async def on_startup(bot_instance: Bot) -> None:
     await bot_instance.set_webhook(
         url=WEBHOOK_URL,
         drop_pending_updates=True,
-        allowed_updates=dp.resolve_used_update_types()
+        allowed_updates=dp.resolve_used_update_types(),
+        secret_token=WEBHOOK_SECRET
     )
     await set_bot_commands(bot_instance)
     bot_user = await bot_instance.get_me()
@@ -77,7 +79,8 @@ def main():
 
     webhook_requests_handler = SimpleRequestHandler(
         dispatcher=dp,
-        bot=bot
+        bot=bot,
+        secret_token=WEBHOOK_SECRET
     )
     webhook_requests_handler.register(app, path=WEBHOOK_PATH)
     setup_application(app, dp, bot=bot)

@@ -48,7 +48,7 @@ pip install -r requirements.txt
 ### 3-qadam: .env faylini sozlash
 `.env` faylida o'zingizning bot tokeningizni saqlang:
 ```env
-BOT_TOKEN="9036541933:AAHgj9J9zvOzy9DNB40KTQYxAfpbRSZnkOY"
+BOT_TOKEN="sizning_bot_tokeningiz"
 ```
 
 ### 4-qadam: Botni yurgizish
